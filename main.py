@@ -13,6 +13,8 @@ from aiogram.types import (
     BotCommandScopeDefault,
     BotCommandScopeChat,
     ErrorEvent,
+    MenuButtonWebApp,
+    WebAppInfo,
 )
 from aiogram.fsm.storage.memory import MemoryStorage
 
@@ -21,6 +23,7 @@ from config import BOT_TOKEN, ADMIN_IDS, WEBHOOK_SECRET
 from database import db
 from handlers import admin, user
 from utils.media import ffmpeg_available
+from miniapp import WEBAPP_URL, migrate, setup_miniapp
 
 
 WEBHOOK_PATH = "/webhook"
@@ -57,6 +60,7 @@ async def start_web_server(bot: Bot, dp: Dispatcher):
 
     app["bot"] = bot
     app["dp"] = dp
+    setup_miniapp(app, bot)
 
     app.router.add_get("/health", health)
     app.router.add_post(WEBHOOK_PATH, webhook)
@@ -95,6 +99,7 @@ async def main():
     dp = Dispatcher(storage=MemoryStorage())
 
     await db.init()
+    await migrate()
 
     async def on_error(event: ErrorEvent):
         logging.error(
@@ -174,6 +179,14 @@ async def main():
         drop_pending_updates=True,
         secret_token=WEBHOOK_SECRET or None,
     )
+
+    # Mini App tugmasi (chatdagi "menu" tugmasi)
+    try:
+        await bot.set_chat_menu_button(
+            menu_button=MenuButtonWebApp(text="🎬 Kinolar", web_app=WebAppInfo(url=WEBAPP_URL))
+        )
+    except Exception:
+        logging.exception("Menu tugmasini o'rnatib bo'lmadi")
 
     if not ffmpeg_available():
         logging.warning(

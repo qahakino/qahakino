@@ -1,0 +1,161 @@
+const tg = window.Telegram?.WebApp;
+tg?.ready(); tg?.expand();
+tg?.setHeaderColor?.("#0e0f13"); tg?.setBackgroundColor?.("#0e0f13");
+const view = document.getElementById("view");
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const hue = s => [...String(s)].reduce((a, c) => (a * 31 + c.charCodeAt(0)) % 360, 7);
+const b64e = s => btoa(unescape(encodeURIComponent(s))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+const b64d = s => decodeURIComponent(escape(atob(s.replace(/-/g, "+").replace(/_/g, "/"))));
+let ME = null;
+
+async function api(path, opts = {}) {
+  const r = await fetch("/api" + path, {...opts, headers: {"Authorization": "tma " + (tg?.initData || ""), "Content-Type": "application/json"}});
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw Object.assign(new Error(data.error || "xatolik"), {status: r.status, data});
+  return data;
+}
+function toast(text, withChat) {
+  const t = document.getElementById("toast");
+  t.hidden = false;
+  t.innerHTML = `<span>${esc(text)}</span>` + (withChat ? `<button id="tchat">Chatga o'tish</button>` : "");
+  if (withChat) document.getElementById("tchat").onclick = () => tg?.close();
+  clearTimeout(toast.t); toast.t = setTimeout(() => t.hidden = true, 5000);
+}
+
+const card = m => `<a class="card" href="#/item/${encodeURIComponent(m.code)}"><div class="poster" style="--h:${hue(m.name)}"><span>${esc(m.name.trim()[0] || "🎬")}</span>${m.kind === "series" ? '<i class="tag">Serial</i>' : ""}</div><div class="t">${esc(m.name)}</div><div class="s">${m.year || ""}${m.views ? ` · 👁 ${m.views}` : ""}</div></a>`;
+const row = (title, items) => items.length ? `<h2>${title}</h2><div class="row">${items.map(card).join("")}</div>` : "";
+
+// ---------- sahifalar ----------
+async function home() {
+  const d = await api("/home");
+  const top = d.popular[0];
+  view.innerHTML =
+    (top ? `<a class="hero" href="#/item/${encodeURIComponent(top.code)}"><div class="poster" style="--h:${hue(top.name)}"><span>${esc(top.name[0])}</span></div><div><div class="muted">Tavsiya etamiz</div><h3>${esc(top.name)}</h3><div class="meta">${[top.year, top.genres.join(", ")].filter(Boolean).join(" · ")}</div><span class="btn sm">Batafsil</span></div></a>` : "") +
+    `<button class="btn alt" id="rnd">🎲 Tasodifiy kino</button>` +
+    row("🆕 Yangi qo'shilganlar", d.latest) + row("🔥 Mashhur", d.popular) + row("📺 Seriallar", d.series) +
+    `<h2>Janrlar</h2><div class="chips">${ME.genres.map(g => `<a class="chip" href="#/catalog?genre=${encodeURIComponent(g)}">${esc(g)}</a>`).join("")}</div>`;
+  document.getElementById("rnd").onclick = async () => { const r = await api("/random"); if (r.code) location.hash = "#/item/" + encodeURIComponent(r.code); };
+}
+
+async function catalog(_, p) {
+  const f = {type: p.get("type") || "all", genre: p.get("genre") || "", year: p.get("year") || "", sort: p.get("sort") || "new"};
+  const sel = (id, opts, val) => `<select id="${id}">${opts.map(([v, l]) => `<option value="${esc(v)}"${v === val ? " selected" : ""}>${esc(l)}</option>`).join("")}</select>`;
+  view.innerHTML = `<h1>Katalog</h1><div class="filters">
+    ${sel("f-type", [["all", "Barchasi"], ["movie", "Kinolar"], ["series", "Seriallar"]], f.type)}
+    ${sel("f-sort", [["new", "Eng yangi"], ["popular", "Mashhur"], ["name", "Nomi (A-Z)"]], f.sort)}
+    ${sel("f-genre", [["", "Barcha janrlar"], ...ME.genres.map(g => [g, g])], f.genre)}
+    <input id="f-year" type="number" inputmode="numeric" placeholder="Yil (masalan 2024)" value="${esc(f.year)}"></div>
+    <div class="grid" id="grid"></div><button class="btn alt" id="more" hidden>Yana ko'rsatish</button>`;
+  const apply = () => { const q = new URLSearchParams({type: $v("f-type"), sort: $v("f-sort"), genre: $v("f-genre"), year: $v("f-year")}); location.hash = "#/catalog?" + q; };
+  ["f-type", "f-sort", "f-genre"].forEach(id => document.getElementById(id).onchange = apply);
+  document.getElementById("f-year").onchange = apply;
+  let offset = 0; const grid = document.getElementById("grid"), more = document.getElementById("more");
+  async function load() {
+    const d = await api("/catalog?" + new URLSearchParams({...f, offset, limit: 20}));
+    grid.insertAdjacentHTML("beforeend", d.items.map(card).join(""));
+    offset += d.items.length; more.hidden = !d.has_more;
+    if (!offset) grid.innerHTML = '<p class="muted">Hech narsa topilmadi</p>';
+  }
+  more.onclick = load; await load();
+}
+const $v = id => document.getElementById(id).value;
+
+function search() {
+  view.innerHTML = `<h1>Qidiruv</h1><input id="q" placeholder="Kino, serial nomi yoki kodi" autofocus><div class="grid" id="res" style="margin-top:14px"></div>`;
+  const q = document.getElementById("q"), res = document.getElementById("res"); let timer;
+  q.oninput = () => { clearTimeout(timer); timer = setTimeout(async () => {
+    const t = q.value.trim(); if (t.length < 1) { res.innerHTML = ""; return; }
+    const d = await api("/catalog?" + new URLSearchParams({q: t, limit: 30}));
+    res.innerHTML = d.items.length ? d.items.map(card).join("") : '<p class="muted">Topilmadi</p>';
+  }, 300); };
+}
+
+async function fav() {
+  const d = await api("/favorites");
+  view.innerHTML = `<h1>❤️ Sevimlilar</h1>` + (d.items.length ? `<div class="grid">${d.items.map(card).join("")}</div>` : '<p class="muted">Hozircha bo\'sh. Kino sahifasidagi ❤️ tugmasini bosing.</p>');
+}
+
+async function profile() {
+  ME = await api("/me");
+  const u = tg?.initDataUnsafe?.user || {};
+  const s = ME.stats;
+  view.innerHTML = `<div class="prof">${u.photo_url ? `<img src="${esc(u.photo_url)}" alt="">` : '<div class="av"></div>'}
+    <h1>${esc([u.first_name, u.last_name].filter(Boolean).join(" ") || "Foydalanuvchi")}</h1>
+    <div class="muted">${u.username ? "@" + esc(u.username) + " · " : ""}ID: ${esc(u.id || "")}</div></div>
+    <div class="stats"><div><b>${s.movies}</b>Kino</div><div><b>${s.series}</b>Serial</div><div><b>${s.favs}</b>Sevimli</div></div>
+    ${row("🕘 Oxirgi ko'rilganlar", ME.recent)}
+    <button class="btn alt" id="tobot">🤖 Botga qaytish</button>`;
+  document.getElementById("tobot").onclick = () => tg?.close();
+}
+
+async function item(code) {
+  const m = await api("/item/" + encodeURIComponent(code));
+  const meta = [m.year, m.duration && m.duration + " daq", m.genres.join(", ")].filter(Boolean).join(" · ");
+  const eps = m.episodes.length ? `<h2>Qismlar (${m.episodes.length})</h2><div class="eps">${m.episodes.map(n => `<button data-ep="${n}" class="${n === m.last_episode ? "on" : ""}">${n}</button>`).join("")}</div>` : "";
+  const next = m.kind === "series" && m.episodes.length ? (m.episodes.find(n => n > (m.last_episode || 0)) || m.episodes[0]) : null;
+  view.innerHTML = `<div class="big" style="--h:${hue(m.name)}"><span>${esc(m.name[0] || "🎬")}</span></div>
+    <h1>${esc(m.name)}</h1><div class="meta">${esc(meta) || "&nbsp;"}</div>
+    <div class="muted">👁 ${m.views} · Kod: ${esc(m.code)}</div>
+    ${m.description ? `<p style="margin-top:10px">${esc(m.description)}</p>` : ""}
+    ${m.kind === "movie" ? `<button class="btn" id="play">▶️ Tomosha qilish</button>` : (next ? `<button class="btn" data-ep="${next}">▶️ ${m.last_episode ? "Davom ettirish" : "Boshlash"} (${next}-qism)</button>` : '<p class="muted">Qismlar hali qo\'shilmagan</p>')}
+    <div class="two"><button class="btn alt" id="fav">${m.fav ? "💔 Olib tashlash" : "❤️ Sevimlilarga"}</button><button class="btn alt" id="share">📤 Ulashish</button></div>
+    ${eps}${ME.is_admin ? adminForm(m) : ""}`;
+  view.onclick = e => { const ep = e.target.closest("[data-ep]"); if (ep) watch(m.code, +ep.dataset.ep); };
+  const play = document.getElementById("play"); if (play) play.onclick = () => watch(m.code);
+  document.getElementById("fav").onclick = async e => { const r = await api("/fav", {method: "POST", body: JSON.stringify({code: m.code})}); e.target.textContent = r.fav ? "💔 Olib tashlash" : "❤️ Sevimlilarga"; };
+  document.getElementById("share").onclick = () => {
+    const link = `https://t.me/${ME.bot}?startapp=${b64e(m.code)}`;
+    const url = "https://t.me/share/url?url=" + encodeURIComponent(link) + "&text=" + encodeURIComponent("🎬 " + m.name);
+    tg?.openTelegramLink ? tg.openTelegramLink(url) : window.open(url);
+  };
+  const form = document.getElementById("aform");
+  if (form) form.onsubmit = async e => { e.preventDefault();
+    await api("/admin/item/" + encodeURIComponent(m.code), {method: "PUT", body: JSON.stringify({
+      year: $v("a-year"), duration: $v("a-dur"), description: $v("a-desc"),
+      genres: [...form.querySelectorAll("input[name=g]:checked")].map(i => i.value)})});
+    toast("✅ Saqlandi"); route(); };
+}
+const adminForm = m => `<details class="admin"><summary>✏️ Tahrirlash (admin)</summary><form id="aform">
+  <input id="a-year" type="number" placeholder="Yil" value="${m.year || ""}">
+  ${m.kind === "movie" ? `<input id="a-dur" type="number" placeholder="Davomiyligi (daqiqa)" value="${m.duration || ""}">` : '<input id="a-dur" type="hidden">'}
+  <textarea id="a-desc" rows="4" placeholder="Tavsif">${esc(m.description)}</textarea>
+  <div>${ME.genres.map(g => `<label><input type="checkbox" name="g" value="${esc(g)}"${m.genres.includes(g) ? " checked" : ""}> ${esc(g)}</label>`).join("")}</div>
+  <button class="btn" type="submit">Saqlash</button></form></details>`;
+
+async function watch(code, episode) {
+  try {
+    await api("/watch", {method: "POST", body: JSON.stringify({code, episode})});
+    tg?.HapticFeedback?.notificationOccurred("success");
+    toast("✅ Video botga yuborildi", true);
+  } catch (e) {
+    const d = e.data || {};
+    if (d.error === "subscribe") { const l = d.channels?.[0]; tg ? tg.showAlert("Avval kanalga obuna bo'ling, so'ng qayta urinib ko'ring.", () => l && tg.openLink(l)) : alert("Kanalga obuna bo'ling"); }
+    else if (d.error === "start_bot") { tg ? tg.showAlert("Avval botga o'tib /start bosing, so'ng qayta urinib ko'ring.", () => tg.close()) : alert("Botga /start yuboring"); }
+    else if (d.error === "too_fast") toast("⏳ Biroz kuting…");
+    else toast("⚠️ Yuborib bo'lmadi, keyinroq urinib ko'ring");
+  }
+}
+
+// ---------- router ----------
+const routes = {home, catalog, search, fav, profile, item};
+async function route() {
+  const [path, qs] = (location.hash.slice(1) || "/").split("?");
+  const parts = path.split("/").filter(Boolean), name = routes[parts[0]] ? parts[0] : "home";
+  document.querySelectorAll("nav a").forEach(a => a.classList.toggle("on", a.dataset.r === name));
+  tg?.BackButton[name === "item" ? "show" : "hide"]();
+  view.onclick = null;
+  try { await routes[name](decodeURIComponent(parts[1] || ""), new URLSearchParams(qs || "")); }
+  catch (e) { view.innerHTML = `<p class="err">${e.status === 404 ? "Topilmadi" : "Xatolik: " + esc(e.message)}</p>`; }
+  window.scrollTo(0, 0);
+}
+tg?.BackButton.onClick(() => history.back());
+addEventListener("hashchange", route);
+(async () => {
+  try {
+    if (!tg?.initData) throw Object.assign(new Error("Mini App'ni Telegram ichida oching"), {});
+    ME = await api("/me");
+    const sp = tg.initDataUnsafe?.start_param;
+    if (sp) { try { location.hash = "#/item/" + encodeURIComponent(b64d(sp)); return; } catch (_) {} }
+    route();
+  } catch (e) { view.innerHTML = `<p class="err">${esc(e.message)}</p>`; }
+})();
