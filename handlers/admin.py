@@ -1,0 +1,1229 @@
+import html
+import json
+import logging
+
+from aiogram import Bot, F, Router
+from aiogram.filters import Command, StateFilter
+from aiogram.fsm.context import FSMContext
+from aiogram.types import (
+    CallbackQuery,
+    Message,
+    MessageOriginChannel,
+)
+
+from config import ADMIN_IDS, MAX_DOWNLOAD_BYTES, STORAGE_CHANNEL_ID
+from database import db
+from keyboards import admin_clips_keyboard, serial_admin_keyboard
+from utils.parts import parse_parts
+from states import AdminStates
+
+
+router = Router()
+
+
+# ============================================================
+# ADMIN TEKSHIRISH
+# ============================================================
+
+def is_admin(user_id: int) -> bool:
+    return user_id in ADMIN_IDS
+
+
+# ============================================================
+# /ADMIN
+# ============================================================
+
+@router.message(Command("admin"))
+async def cmd_admin(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+
+    await state.clear()
+    await state.set_state(AdminStates.waiting_movie_name)
+
+    await message.answer(
+        "🎬 <b>Kino qo'shish</b>\n\n"
+        "Kino nomini kiriting:"
+    )
+
+
+# ============================================================
+# KINO NOMI
+# ============================================================
+
+@router.message(
+    StateFilter(AdminStates.waiting_movie_name),
+    F.text,
+    ~F.text.startswith("/")
+)
+async def process_movie_name(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+
+    movie_name = message.text.strip()
+
+    if not movie_name:
+        await message.answer("❌ Kino nomi bo'sh bo'lishi mumkin emas.")
+        return
+
+    await state.update_data(movie_name=movie_name)
+    await state.set_state(AdminStates.waiting_movie_code)
+
+    await message.answer(
+        f"🎬 Kino: <b>{movie_name}</b>\n\n"
+        "🔢 Kino kodini kiriting:"
+    )
+
+
+# ============================================================
+# KINO KODI
+# ============================================================
+
+@router.message(
+    StateFilter(AdminStates.waiting_movie_code),
+    F.text,
+    ~F.text.startswith("/")
+)
+async def process_movie_code(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+
+    code = message.text.strip()
+
+    if not code:
+        await message.answer("❌ Kod bo'sh bo'lishi mumkin emas.")
+        return
+
+    if await db.code_exists(code):
+        await message.answer(
+            f"❌ <b>{code}</b> kodi allaqachon ishlatilgan.\n\n"
+            "Boshqa kod kiriting:"
+        )
+        return
+
+    await state.update_data(movie_code=code)
+    await state.set_state(AdminStates.waiting_movie_content)
+
+    await message.answer(
+        "📹 Endi kino videosini yuboring.\n\n"
+        "Videoni shu yerga yuboring yoki Storage kanaldan forward qiling."
+    )
+
+
+# ============================================================
+# KINO VIDEOSINI QABUL QILISH
+# ============================================================
+
+@router.message(
+    StateFilter(AdminStates.waiting_movie_content),
+    F.video
+)
+async def process_movie_content(
+    message: Message,
+    state: FSMContext,
+    bot: Bot,
+):
+    if not is_admin(message.from_user.id):
+        return
+
+    data = await state.get_data()
+
+    movie_name = data.get("movie_name")
+    movie_code = data.get("movie_code")
+
+    if not movie_name or not movie_code:
+        await state.clear()
+        await message.answer(
+            "❌ Ma'lumotlar yo'qolgan. /admin orqali qaytadan boshlang."
+        )
+        return
+
+    try:
+        chat_id, message_id = await save_to_storage(message, bot)
+
+        await db.add_movie(
+            code=movie_code,
+            name=movie_name,
+            chat_id=chat_id,
+            message_id=message_id,
+        )
+
+        await message.answer(
+            "✅ <b>Kino muvaffaqiyatli qo'shildi!</b>\n\n"
+            f"🎬 Nomi: <b>{movie_name}</b>\n"
+            f"🔑 Kodi: <b>{movie_code}</b>\n"
+            f"📦 Storage message ID: <code>{message_id}</code>"
+        )
+
+    except Exception as e:
+        await message.answer(
+            "❌ Kino qo'shishda xatolik yuz berdi.\n\n"
+            f"<code>{e}</code>"
+        )
+
+    finally:
+        await state.clear()
+
+
+# ============================================================
+# STORAGE'GA SAQLASH
+# ============================================================
+
+async def save_to_storage(
+    message: Message,
+    bot: Bot,
+):
+    """
+    Video/foto/xabarni private Storage kanalga saqlaydi.
+
+    Agar xabar forward qilingan bo'lsa va original
+    channel message mavjud bo'lsa, original message'ni
+    ishlatishga harakat qiladi.
+
+    Aks holda copy_message ishlatiladi.
+    """
+
+    # Forward qilingan Storage kanal xabarini aniqlash
+    if isinstance(message.forward_origin, MessageOriginChannel):
+        origin = message.forward_origin
+
+        if origin.chat.id == STORAGE_CHANNEL_ID:
+            return origin.chat.id, origin.message_id
+
+    # Oddiy yuborilgan xabarni Storage kanalga nusxalash
+    copied = await bot.copy_message(
+        chat_id=STORAGE_CHANNEL_ID,
+        from_chat_id=message.chat.id,
+        message_id=message.message_id,
+    )
+
+    return STORAGE_CHANNEL_ID, copied.message_id
+
+
+# ============================================================
+# /CANCEL
+# ============================================================
+
+@router.message(Command("cancel"))
+async def cmd_cancel(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+
+    await state.clear()
+
+    await message.answer(
+        "❌ Amal bekor qilindi."
+    )
+
+
+# ============================================================
+# /DELETE
+# ============================================================
+
+@router.message(Command("delete"))
+async def cmd_delete(
+    message: Message,
+    state: FSMContext,
+    bot: Bot,
+):
+    if not is_admin(message.from_user.id):
+        return
+
+    parts = message.text.split(maxsplit=1)
+
+    # /delete 1001
+    if len(parts) >= 2 and parts[1].strip():
+        code = parts[1].strip()
+
+        await delete_content_by_code(
+            message=message,
+            code=code,
+            bot=bot,
+        )
+        return
+
+    # Faqat /delete
+    await state.set_state(AdminStates.waiting_delete_movie_code)
+
+    await message.answer(
+        "🗑 <b>Kino yoki serial kodini kiriting:</b>\n\n"
+        "Masalan:\n"
+        "• <code>1001</code> — kino\n"
+        "• <code>2001</code> — serial"
+    )
+
+
+# ============================================================
+# DELETE KODINI QABUL QILISH
+# ============================================================
+
+@router.message(
+    StateFilter(AdminStates.waiting_delete_movie_code),
+    F.text,
+    ~F.text.startswith("/")
+)
+async def process_delete_movie_code(
+    message: Message,
+    state: FSMContext,
+    bot: Bot,
+):
+    if not is_admin(message.from_user.id):
+        return
+
+    code = message.text.strip()
+
+    await delete_content_by_code(
+        message=message,
+        code=code,
+        bot=bot,
+    )
+
+    await state.clear()
+
+
+# ============================================================
+# KINO YOKI SERIALNI O'CHIRISH
+# ============================================================
+
+async def delete_content_by_code(
+    message: Message,
+    code: str,
+    bot: Bot,
+):
+    # ========================================================
+    # 1. AVVAL KINO QIDIRAMIZ
+    # ========================================================
+
+    movie = await db.get_movie(code)
+
+    if movie:
+        _, name, chat_id, message_id = movie
+
+        channel_deleted = False
+        delete_error = None
+
+        try:
+            await bot.delete_message(
+                chat_id=chat_id,
+                message_id=message_id,
+            )
+            channel_deleted = True
+
+        except Exception as e:
+            delete_error = str(e)
+
+        deleted_from_db = await db.delete_movie(code)
+
+        if not deleted_from_db:
+            await message.answer(
+                "⚠️ Kino topildi, lekin bazadan o'chirishda muammo yuz berdi."
+            )
+            return
+
+        if channel_deleted:
+            await message.answer(
+                "🗑 <b>Kino o'chirildi!</b>\n\n"
+                f"🎬 Nomi: <b>{name}</b>\n"
+                f"🔑 Kodi: <code>{code}</code>\n\n"
+                "✅ Database'dan o'chirildi\n"
+                "✅ Storage kanaldan o'chirildi"
+            )
+        else:
+            await message.answer(
+                "⚠️ <b>Kino Database'dan o'chirildi.</b>\n\n"
+                f"🎬 Nomi: <b>{name}</b>\n"
+                f"🔑 Kodi: <code>{code}</code>\n\n"
+                "❌ Storage kanaldan o'chirilmadi.\n\n"
+                f"Telegram xatosi:\n<code>{delete_error}</code>"
+            )
+
+        return
+
+    # ========================================================
+    # 2. KINO TOPILMASA — SERIAL QIDIRAMIZ
+    # ========================================================
+
+    series = await db.get_series_by_code(code)
+
+    if not series:
+        await message.answer(
+            f"❌ <code>{code}</code> kodi bilan "
+            "kino ham, serial ham topilmadi."
+        )
+        return
+
+    (
+        series_id,
+        series_code,
+        series_name,
+        poster_chat_id,
+        poster_message_id,
+    ) = series
+
+    # ========================================================
+    # 3. SERIALNING BARCHA QISMLARINI OLAMIZ
+    # ========================================================
+
+    episodes = await db.get_episodes(series_id)
+
+    deleted_from_storage = 0
+    failed_deletes = 0
+
+    # ========================================================
+    # 4. POSTERNI O'CHIRAMIZ
+    # ========================================================
+
+    try:
+        await bot.delete_message(
+            chat_id=poster_chat_id,
+            message_id=poster_message_id,
+        )
+
+        deleted_from_storage += 1
+
+    except Exception:
+        failed_deletes += 1
+
+    # ========================================================
+    # 5. BARCHA QISMLARNI STORAGE'DAN O'CHIRAMIZ
+    # ========================================================
+
+    for episode in episodes:
+        (
+            episode_id,
+            episode_number,
+            chat_id,
+            message_id,
+        ) = episode
+
+        try:
+            await bot.delete_message(
+                chat_id=chat_id,
+                message_id=message_id,
+            )
+
+            deleted_from_storage += 1
+
+        except Exception:
+            failed_deletes += 1
+
+    # ========================================================
+    # 6. SERIALNI DATABASE'DAN O'CHIRAMIZ
+    # ========================================================
+
+    deleted_series = await db.delete_series(code)
+
+    if not deleted_series:
+        await message.answer(
+            "❌ Serial Storage'dan o'chirishga harakat qilindi, "
+            "lekin bazadan topilmadi."
+        )
+        return
+
+    # ========================================================
+    # 7. NATIJA
+    # ========================================================
+
+    await message.answer(
+        "🗑 <b>Serial o'chirildi!</b>\n\n"
+        f"📺 Nomi: <b>{series_name}</b>\n"
+        f"🔑 Kodi: <code>{series_code}</code>\n"
+        f"🎬 Qismlar: <b>{len(episodes)} ta</b>\n\n"
+        f"🗑 Storage'dan o'chirilgan: "
+        f"<b>{deleted_from_storage} ta</b>\n"
+        f"⚠️ O'chmay qolgan: "
+        f"<b>{failed_deletes} ta</b>\n\n"
+        "✅ Database'dan serial va uning qismlari o'chirildi."
+    )
+
+
+# ============================================================
+# /STATS
+# ============================================================
+
+@router.message(Command("stats"))
+async def cmd_stats(message: Message):
+    if not is_admin(message.from_user.id):
+        return
+
+    users_count = await db.users_count()
+    movies_count = await db.movies_count()
+    series_count = await db.series_count()
+    clips_count = await db.clips_count()
+
+    await message.answer(
+        "📊 <b>Bot statistikasi</b>\n\n"
+        f"👥 Foydalanuvchilar: <b>{users_count}</b>\n"
+        f"🎬 Kinolar: <b>{movies_count}</b>\n"
+        f"📺 Seriallar: <b>{series_count}</b>\n"
+        f"🎙 Ovozli parchalar: <b>{clips_count}</b>"
+    )
+
+
+# ============================================================
+# /SERIAL
+# ============================================================
+
+@router.message(Command("serial"))
+async def cmd_serial(
+    message: Message,
+    state: FSMContext,
+):
+    if not is_admin(message.from_user.id):
+        return
+
+    await state.clear()
+
+    series = await db.all_series()
+
+    if series:
+        await message.answer(
+            "📺 <b>Serial boshqaruvi</b>\n\n"
+            "Mavjud seriallardan birini tanlang "
+            "yoki yangi serial qo'shing:",
+            reply_markup=serial_admin_keyboard(series),
+        )
+    else:
+        await message.answer(
+            "📺 <b>Serial qo'shish</b>\n\n"
+            "Hozircha seriallar yo'q.\n"
+            "Yangi serial qo'shish tugmasini bosing.",
+            reply_markup=serial_admin_keyboard([]),
+        )
+
+
+# ============================================================
+# YANGI SERIAL
+# ============================================================
+
+@router.callback_query(F.data == "admin_new_series")
+async def admin_new_series(
+    callback: CallbackQuery,
+    state: FSMContext,
+):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Ruxsat yo'q.", show_alert=True)
+        return
+
+    await state.clear()
+    await state.set_state(AdminStates.waiting_series_name)
+
+    await callback.message.answer(
+        "📺 <b>Yangi serial</b>\n\n"
+        "Serial nomini kiriting:"
+    )
+
+    await callback.answer()
+
+
+# ============================================================
+# MAVJUD SERIALNI TANLASH
+# ============================================================
+
+@router.callback_query(F.data.startswith("admin_series:"))
+async def admin_select_series(
+    callback: CallbackQuery,
+    state: FSMContext,
+):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Ruxsat yo'q.", show_alert=True)
+        return
+
+    try:
+        series_id = int(callback.data.split(":", 1)[1])
+    except (ValueError, IndexError):
+        await callback.answer(
+            "❌ Noto'g'ri serial.",
+            show_alert=True,
+        )
+        return
+
+    series = await db.get_series(series_id)
+
+    if not series:
+        await callback.answer(
+            "❌ Serial topilmadi.",
+            show_alert=True,
+        )
+        return
+
+    _, code, name, _, _ = series
+
+    await state.clear()
+    await state.update_data(
+        series_id=series_id,
+        series_code=code,
+        series_name=name,
+    )
+
+    await state.set_state(AdminStates.waiting_series_episode_number)
+
+    await callback.message.answer(
+        f"📺 Serial: <b>{name}</b>\n"
+        f"🔑 Kod: <code>{code}</code>\n\n"
+        "🎬 Qism raqamini kiriting:"
+    )
+
+    await callback.answer()
+
+
+# ============================================================
+# YANGI SERIAL NOMI
+# ============================================================
+
+@router.message(
+    StateFilter(AdminStates.waiting_series_name),
+    F.text,
+    ~F.text.startswith("/")
+)
+async def process_series_name(
+    message: Message,
+    state: FSMContext,
+):
+    if not is_admin(message.from_user.id):
+        return
+
+    series_name = message.text.strip()
+
+    if not series_name:
+        await message.answer(
+            "❌ Serial nomi bo'sh bo'lishi mumkin emas."
+        )
+        return
+
+    await state.update_data(
+        series_name=series_name
+    )
+
+    await state.set_state(
+        AdminStates.waiting_series_code
+    )
+
+    await message.answer(
+        f"📺 Serial: <b>{series_name}</b>\n\n"
+        "🔑 Serial kodini kiriting:"
+    )
+
+
+# ============================================================
+# YANGI SERIAL KODI
+# ============================================================
+
+@router.message(
+    StateFilter(AdminStates.waiting_series_code),
+    F.text,
+    ~F.text.startswith("/")
+)
+async def process_series_code(
+    message: Message,
+    state: FSMContext,
+):
+    if not is_admin(message.from_user.id):
+        return
+
+    code = message.text.strip()
+
+    if not code:
+        await message.answer(
+            "❌ Kod bo'sh bo'lishi mumkin emas."
+        )
+        return
+
+    if await db.code_exists(code):
+        await message.answer(
+            f"❌ <code>{code}</code> kodi allaqachon ishlatilgan.\n\n"
+            "Boshqa kod kiriting:"
+        )
+        return
+
+    await state.update_data(
+        series_code=code
+    )
+
+    await state.set_state(
+        AdminStates.waiting_series_poster
+    )
+
+    await message.answer(
+        "🖼 Endi serial uchun poster rasmini yuboring:"
+    )
+
+
+# ============================================================
+# SERIAL POSTERI
+# ============================================================
+
+@router.message(
+    StateFilter(AdminStates.waiting_series_poster),
+    F.photo
+)
+async def process_series_poster(
+    message: Message,
+    state: FSMContext,
+    bot: Bot,
+):
+    if not is_admin(message.from_user.id):
+        return
+
+    data = await state.get_data()
+
+    series_name = data.get("series_name")
+    series_code = data.get("series_code")
+
+    if not series_name or not series_code:
+        await state.clear()
+
+        await message.answer(
+            "❌ Ma'lumotlar yo'qolgan. "
+            "/serial orqali qaytadan boshlang."
+        )
+        return
+
+    try:
+        poster_chat_id, poster_message_id = await save_to_storage(
+            message,
+            bot,
+        )
+
+        await state.update_data(
+            poster_chat_id=poster_chat_id,
+            poster_message_id=poster_message_id,
+        )
+
+        await state.set_state(
+            AdminStates.waiting_series_episode_number
+        )
+
+        await message.answer(
+            "✅ Poster saqlandi.\n\n"
+            "🎬 Birinchi qism raqamini kiriting:"
+        )
+
+    except Exception as e:
+        await message.answer(
+            "❌ Posterni saqlashda xatolik yuz berdi.\n\n"
+            f"<code>{e}</code>"
+        )
+
+
+# ============================================================
+# QISM RAQAMI
+# ============================================================
+
+@router.message(
+    StateFilter(AdminStates.waiting_series_episode_number),
+    F.text,
+    ~F.text.startswith("/")
+)
+async def process_episode_number(
+    message: Message,
+    state: FSMContext,
+):
+    if not is_admin(message.from_user.id):
+        return
+
+    try:
+        episode_number = int(message.text.strip())
+    except ValueError:
+        await message.answer(
+            "❌ Qism raqami faqat son bo'lishi kerak.\n\n"
+            "Masalan: <code>1</code>"
+        )
+        return
+
+    if episode_number <= 0:
+        await message.answer(
+            "❌ Qism raqami 1 yoki undan katta bo'lishi kerak."
+        )
+        return
+
+    data = await state.get_data()
+
+    series_id = data.get("series_id")
+
+    # ========================================================
+    # MAVJUD SERIAL
+    # ========================================================
+
+    if series_id:
+        existing_episode = await db.get_episode_by_number(
+            series_id,
+            episode_number,
+        )
+
+        if existing_episode:
+            await message.answer(
+                f"❌ <b>{episode_number}-qism</b> allaqachon mavjud.\n\n"
+                "Boshqa qism raqamini kiriting:"
+            )
+            return
+
+        await state.update_data(
+            episode_number=episode_number
+        )
+
+        await state.set_state(
+            AdminStates.waiting_series_episode_content
+        )
+
+        await message.answer(
+            f"🎬 <b>{episode_number}-qism</b>\n\n"
+            "📹 Endi video yuboring:"
+        )
+
+        return
+
+    # ========================================================
+    # YANGI SERIAL
+    # ========================================================
+
+    series_name = data.get("series_name")
+    series_code = data.get("series_code")
+    poster_chat_id = data.get("poster_chat_id")
+    poster_message_id = data.get("poster_message_id")
+
+    if not all(
+        [
+            series_name,
+            series_code,
+            poster_chat_id,
+            poster_message_id,
+        ]
+    ):
+        await state.clear()
+
+        await message.answer(
+            "❌ Serial ma'lumotlari to'liq emas.\n\n"
+            "/serial orqali qaytadan boshlang."
+        )
+        return
+
+    await state.update_data(
+        episode_number=episode_number
+    )
+
+    await state.set_state(
+        AdminStates.waiting_series_episode_content
+    )
+
+    await message.answer(
+        f"📺 Serial: <b>{series_name}</b>\n"
+        f"🔑 Kod: <code>{series_code}</code>\n"
+        f"🎬 Qism: <b>{episode_number}</b>\n\n"
+        "📹 Endi birinchi qism videosini yuboring:"
+    )
+
+
+# ============================================================
+# QISM VIDEOSINI QABUL QILISH
+# ============================================================
+
+@router.message(
+    StateFilter(AdminStates.waiting_series_episode_content),
+    F.video
+)
+async def process_episode_video(
+    message: Message,
+    state: FSMContext,
+    bot: Bot,
+):
+    if not is_admin(message.from_user.id):
+        return
+
+    data = await state.get_data()
+
+    episode_number = data.get("episode_number")
+
+    if not episode_number:
+        await state.clear()
+
+        await message.answer(
+            "❌ Qism raqami topilmadi. "
+            "/serial orqali qaytadan boshlang."
+        )
+        return
+
+    # ========================================================
+    # MAVJUD SERIALGA QISM QO'SHISH
+    # ========================================================
+
+    series_id = data.get("series_id")
+
+    if series_id:
+        series = await db.get_series(series_id)
+
+        if not series:
+            await state.clear()
+
+            await message.answer(
+                "❌ Serial topilmadi."
+            )
+            return
+
+        _, series_code, series_name, _, _ = series
+
+        try:
+            chat_id, message_id = await save_to_storage(
+                message,
+                bot,
+            )
+
+            added = await db.add_episode(
+                series_id=series_id,
+                episode_number=episode_number,
+                chat_id=chat_id,
+                message_id=message_id,
+            )
+
+            if not added:
+                # Storage'ga saqlanib qolgan bo'lishi mumkin.
+                # Shu sababli message'ni o'chirishga harakat qilamiz.
+                try:
+                    await bot.delete_message(
+                        chat_id=chat_id,
+                        message_id=message_id,
+                    )
+                except Exception:
+                    pass
+
+                await message.answer(
+                    f"❌ <b>{episode_number}-qism</b>ni "
+                    "qo'shib bo'lmadi.\n\n"
+                    "Bu qism allaqachon mavjud bo'lishi mumkin."
+                )
+
+                await state.clear()
+                return
+
+            await message.answer(
+                "✅ <b>Qism qo'shildi!</b>\n\n"
+                f"📺 Serial: <b>{series_name}</b>\n"
+                f"🔑 Kod: <code>{series_code}</code>\n"
+                f"🎬 Qism: <b>{episode_number}</b>"
+            )
+
+        except Exception as e:
+            await message.answer(
+                "❌ Qismni qo'shishda xatolik yuz berdi.\n\n"
+                f"<code>{e}</code>"
+            )
+
+        finally:
+            await state.clear()
+
+        return
+
+    # ========================================================
+    # YANGI SERIALNI YARATISH
+    # ========================================================
+
+    series_name = data.get("series_name")
+    series_code = data.get("series_code")
+    poster_chat_id = data.get("poster_chat_id")
+    poster_message_id = data.get("poster_message_id")
+
+    if not all(
+        [
+            series_name,
+            series_code,
+            poster_chat_id,
+            poster_message_id,
+        ]
+    ):
+        await state.clear()
+
+        await message.answer(
+            "❌ Serial ma'lumotlari to'liq emas.\n\n"
+            "/serial orqali qaytadan boshlang."
+        )
+        return
+
+    try:
+        # Serialni yaratamiz
+        series_id = await db.add_series(
+            code=series_code,
+            name=series_name,
+            poster_chat_id=poster_chat_id,
+            poster_message_id=poster_message_id,
+        )
+
+        # Birinchi qismni Storage'ga saqlaymiz
+        chat_id, message_id = await save_to_storage(
+            message,
+            bot,
+        )
+
+        # Birinchi qismni DB'ga qo'shamiz
+        added = await db.add_episode(
+            series_id=series_id,
+            episode_number=episode_number,
+            chat_id=chat_id,
+            message_id=message_id,
+        )
+
+        if not added:
+            await message.answer(
+                "⚠️ Serial yaratildi, lekin birinchi qismni "
+                "qo'shishda muammo yuz berdi."
+            )
+
+            await state.clear()
+            return
+
+        await message.answer(
+            "🎉 <b>Yangi serial muvaffaqiyatli yaratildi!</b>\n\n"
+            f"📺 Nomi: <b>{series_name}</b>\n"
+            f"🔑 Kodi: <code>{series_code}</code>\n"
+            f"🎬 Birinchi qism: <b>{episode_number}</b>\n\n"
+            "Endi boshqa qismlarni qo'shish uchun:\n"
+            "<code>/serial</code> → serialni tanlang → qism raqami → video"
+        )
+
+    except Exception as e:
+        await message.answer(
+            "❌ Serial yaratishda xatolik yuz berdi.\n\n"
+            f"<code>{e}</code>"
+        )
+
+    finally:
+        await state.clear()
+
+
+# ============================================================
+# OVOZLI PARCHALAR (/clip, /clips)
+# Tartib: nom -> asl video -> orqa fonli video -> vaqt belgili matn qismlari
+# ============================================================
+
+@router.message(Command("clip"))
+async def cmd_clip(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+
+    await state.clear()
+    await state.set_state(AdminStates.waiting_clip_title)
+
+    await message.answer(
+        "🎙 <b>Ovozli parcha qo'shish</b>\n\n"
+        "Parcha nomini kiriting (masalan: <i>Temir odam — mashhur monolog</i>):"
+    )
+
+
+@router.message(
+    StateFilter(AdminStates.waiting_clip_title),
+    F.text,
+    ~F.text.startswith("/"),
+)
+async def process_clip_title(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+
+    title = message.text.strip()
+    if not title:
+        await message.answer("❌ Nom bo'sh bo'lishi mumkin emas.")
+        return
+
+    await state.update_data(clip_title=title)
+    await state.set_state(AdminStates.waiting_clip_video)
+
+    await message.answer(
+        f"🎞 Parcha: <b>{html.escape(title)}</b>\n\n"
+        "1️⃣ Endi <b>asl videoni</b> yuboring (foydalanuvchiga ko'rsatiladi, "
+        "o'z ovozi bilan). Video sifatida yuboring."
+    )
+
+
+@router.message(StateFilter(AdminStates.waiting_clip_video), F.video)
+async def process_clip_video(message: Message, state: FSMContext, bot: Bot):
+    if not is_admin(message.from_user.id):
+        return
+
+    video = message.video
+
+    # Zaxira sifatida storage kanalga nusxalaymiz (bo'lmasa ham ishlayveradi)
+    storage_chat_id = storage_message_id = None
+    try:
+        storage_chat_id, storage_message_id = await save_to_storage(message, bot)
+    except Exception:
+        logging.warning("Parchani storage kanalga saqlab bo'lmadi", exc_info=True)
+
+    await state.update_data(
+        clip_video_file_id=video.file_id,
+        clip_duration=video.duration,
+        clip_storage_chat_id=storage_chat_id,
+        clip_storage_message_id=storage_message_id,
+    )
+    await state.set_state(AdminStates.waiting_clip_bg)
+
+    await message.answer(
+        f"✅ Asl video qabul qilindi ({video.duration or '?'} soniya).\n\n"
+        "2️⃣ Endi <b>faqat orqa fonli videoni</b> yuboring (gaplar olib tashlangan, "
+        "musiqa va fon qolgan; asl bilan bir xil uzunlikda).\n\n"
+        "⚠️ Bu videoning hajmi <b>20 MB dan oshmasin</b> — bot uni yuklab olib "
+        "ovozlarni ustiga qo'yadi."
+    )
+
+
+@router.message(StateFilter(AdminStates.waiting_clip_bg), F.video)
+async def process_clip_bg(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+
+    video = message.video
+
+    if video.file_size and video.file_size > MAX_DOWNLOAD_BYTES:
+        size_mb = video.file_size / (1024 * 1024)
+        await message.answer(
+            f"❌ Video juda katta ({size_mb:.1f} MB). "
+            "20 MB dan kichikroq qilib siqib yuboring."
+        )
+        return
+
+    data = await state.get_data()
+    warning = ""
+    orig = data.get("clip_duration")
+    if orig and video.duration and abs(orig - video.duration) > 2:
+        warning = (
+            f"\n\n⚠️ Diqqat: orqa fonli video ({video.duration} s) asl videodan "
+            f"({orig} s) farq qiladi. Vaqtlar mos kelmasligi mumkin."
+        )
+
+    await state.update_data(
+        clip_bg_file_id=video.file_id,
+        clip_bg_duration=video.duration,
+    )
+    await state.set_state(AdminStates.waiting_clip_parts)
+
+    await message.answer(
+        "✅ Orqa fonli video qabul qilindi."
+        f"{warning}\n\n"
+        "3️⃣ Endi matnni <b>qismlarga bo'lib</b> yuboring. Har bir qism alohida "
+        "qatorda, shu ko'rinishda:\n\n"
+        "<code>00:05-00:12 | Salom, men keldim</code>\n"
+        "<code>00:13-00:20 | Qayerdan keldingiz?</code>\n\n"
+        "Vaqt — shu gap videoda qachon eshitilishi (daqiqa:soniya). "
+        "Qismlar bir-biriga kesishmasin. Hammasini bitta xabarda yuboring."
+    )
+
+
+@router.message(
+    StateFilter(AdminStates.waiting_clip_parts),
+    F.text,
+    ~F.text.startswith("/"),
+)
+async def process_clip_parts(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+
+    data = await state.get_data()
+    max_duration = data.get("clip_bg_duration") or data.get("clip_duration")
+
+    parts, errors = parse_parts(message.text, max_duration=max_duration)
+
+    if errors:
+        shown = "\n".join(f"• {html.escape(e)}" for e in errors[:8])
+        await message.answer(
+            "❌ Quyidagi xatolarni to'g'rilab, matnni qaytadan yuboring:\n\n"
+            f"{shown}"
+        )
+        return
+
+    title = data.get("clip_title")
+    video_file_id = data.get("clip_video_file_id")
+    bg_file_id = data.get("clip_bg_file_id")
+
+    if not (title and video_file_id and bg_file_id):
+        await state.clear()
+        await message.answer("❌ Ma'lumotlar yo'qolgan. /clip orqali qaytadan boshlang.")
+        return
+
+    try:
+        clip_id = await db.add_clip(
+            title=title,
+            script="\n".join(part["text"] for part in parts),
+            video_file_id=video_file_id,
+            duration=data.get("clip_duration"),
+            storage_chat_id=data.get("clip_storage_chat_id"),
+            storage_message_id=data.get("clip_storage_message_id"),
+            bg_file_id=bg_file_id,
+            parts_json=json.dumps(parts, ensure_ascii=False),
+        )
+    except Exception as e:
+        logging.exception("Parcha qo'shishda xatolik")
+        await message.answer(
+            "❌ Parcha qo'shishda xatolik yuz berdi.\n\n"
+            f"<code>{html.escape(str(e))}</code>"
+        )
+        return
+    finally:
+        await state.clear()
+
+    await message.answer(
+        "✅ <b>Ovozli parcha qo'shildi!</b>\n\n"
+        f"🎞 Nomi: <b>{html.escape(title)}</b>\n"
+        f"🧩 Qismlar: <b>{len(parts)} ta</b>\n"
+        f"⏱ Davomiyligi: <b>{data.get('clip_duration') or '?'} soniya</b>\n"
+        f"🆔 ID: <code>{clip_id}</code>\n\n"
+        "Foydalanuvchilar «🎙 Ovozli kino» tugmasida ko'radi.\n"
+        "Ro'yxat va o'chirish: /clips"
+    )
+
+
+@router.message(Command("clips"))
+async def cmd_clips(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+
+    await state.clear()
+    clips = await db.all_clips()
+
+    if not clips:
+        await message.answer(
+            "🎙 Hozircha ovozli parchalar yo'q.\n"
+            "Qo'shish uchun: /clip"
+        )
+        return
+
+    await message.answer(
+        "🎙 <b>Ovozli parchalar</b>\n\n"
+        "O'chirish uchun parchani bosing:",
+        reply_markup=admin_clips_keyboard(clips),
+    )
+
+
+@router.callback_query(F.data.startswith("admin_del_clip:"))
+async def admin_delete_clip(callback: CallbackQuery, bot: Bot):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Ruxsat yo'q.", show_alert=True)
+        return
+
+    try:
+        clip_id = int(callback.data.split(":", 1)[1])
+    except (ValueError, IndexError):
+        await callback.answer("❌ Noto'g'ri parcha.", show_alert=True)
+        return
+
+    deleted = await db.delete_clip(clip_id)
+    if not deleted:
+        await callback.answer("❌ Parcha topilmadi.", show_alert=True)
+        return
+
+    # Storage kanaldagi nusxasini ham o'chirishga harakat qilamiz
+    if deleted["storage_chat_id"] and deleted["storage_message_id"]:
+        try:
+            await bot.delete_message(
+                chat_id=deleted["storage_chat_id"],
+                message_id=deleted["storage_message_id"],
+            )
+        except Exception:
+            pass
+
+    await callback.answer(f"🗑 O'chirildi: {deleted['title']}", show_alert=False)
+
+    # Ro'yxatni yangilaymiz
+    clips = await db.all_clips()
+    if clips:
+        await callback.message.edit_reply_markup(
+            reply_markup=admin_clips_keyboard(clips)
+        )
+    else:
+        await callback.message.edit_text("🎙 Parchalar qolmadi. Qo'shish uchun: /clip")
