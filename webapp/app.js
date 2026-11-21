@@ -9,7 +9,7 @@ const b64d = s => decodeURIComponent(escape(atob(s.replace(/-/g, "+").replace(/_
 let ME = null;
 
 async function api(path, opts = {}) {
-  const r = await fetch("/api" + path, {...opts, headers: {"Authorization": "tma " + (tg?.initData || ""), "Content-Type": "application/json"}});
+  const r = await fetch("/api" + path, {...opts, headers: {"Authorization": "tma " + (tg?.initData || ""), "Content-Type": "application/json", ...opts.headers}});
   const data = await r.json().catch(() => ({}));
   if (!r.ok) throw Object.assign(new Error(data.error || "xatolik"), {status: r.status, data});
   return data;
@@ -22,7 +22,8 @@ function toast(text, withChat) {
   clearTimeout(toast.t); toast.t = setTimeout(() => t.hidden = true, 5000);
 }
 
-const card = m => `<a class="card" href="#/item/${encodeURIComponent(m.code)}"><div class="poster" style="--h:${hue(m.name)}"><span>${esc(m.name.trim()[0] || "🎬")}</span>${m.kind === "series" ? '<i class="tag">Serial</i>' : ""}</div><div class="t">${esc(m.name)}</div><div class="s">${m.year || ""}${m.views ? ` · 👁 ${m.views}` : ""}</div></a>`;
+const pimg = m => m.poster ? `<img class="pimg" loading="lazy" src="/poster/${encodeURIComponent(m.code)}?v=${m.poster}" onerror="this.remove()" alt="">` : "";
+const card = m => `<a class="card" href="#/item/${encodeURIComponent(m.code)}"><div class="poster" style="--h:${hue(m.name)}"><span>${esc(m.name.trim()[0] || "🎬")}</span>${pimg(m)}${m.kind === "series" ? '<i class="tag">Serial</i>' : ""}</div><div class="t">${esc(m.name)}</div><div class="s">${m.year || ""}${m.views ? ` · 👁 ${m.views}` : ""}</div></a>`;
 const row = (title, items) => items.length ? `<h2>${title}</h2><div class="row">${items.map(card).join("")}</div>` : "";
 
 // ---------- sahifalar ----------
@@ -30,7 +31,7 @@ async function home() {
   const d = await api("/home");
   const top = d.popular[0];
   view.innerHTML =
-    (top ? `<a class="hero" href="#/item/${encodeURIComponent(top.code)}"><div class="poster" style="--h:${hue(top.name)}"><span>${esc(top.name[0])}</span></div><div><div class="muted">Tavsiya etamiz</div><h3>${esc(top.name)}</h3><div class="meta">${[top.year, top.genres.join(", ")].filter(Boolean).join(" · ")}</div><span class="btn sm">Batafsil</span></div></a>` : "") +
+    (top ? `<a class="hero" href="#/item/${encodeURIComponent(top.code)}"><div class="poster" style="--h:${hue(top.name)}"><span>${esc(top.name[0])}</span>${pimg(top)}</div><div><div class="muted">Tavsiya etamiz</div><h3>${esc(top.name)}</h3><div class="meta">${[top.year, top.genres.join(", ")].filter(Boolean).join(" · ")}</div><span class="btn sm">Batafsil</span></div></a>` : "") +
     `<button class="btn alt" id="rnd">🎲 Tasodifiy kino</button>` +
     row("🆕 Yangi qo'shilganlar", d.latest) + row("🔥 Mashhur", d.popular) + row("📺 Seriallar", d.series) +
     `<h2>Janrlar</h2><div class="chips">${ME.genres.map(g => `<a class="chip" href="#/catalog?genre=${encodeURIComponent(g)}">${esc(g)}</a>`).join("")}</div>`;
@@ -93,13 +94,13 @@ async function item(code) {
   const meta = [m.year, m.duration && m.duration + " daq", m.genres.join(", ")].filter(Boolean).join(" · ");
   const eps = m.episodes.length ? `<h2>Qismlar (${m.episodes.length})</h2><div class="eps">${m.episodes.map(n => `<button data-ep="${n}" class="${n === m.last_episode ? "on" : ""}">${n}</button>`).join("")}</div>` : "";
   const next = m.kind === "series" && m.episodes.length ? (m.episodes.find(n => n > (m.last_episode || 0)) || m.episodes[0]) : null;
-  view.innerHTML = `<div class="big" style="--h:${hue(m.name)}"><span>${esc(m.name[0] || "🎬")}</span></div>
+  view.innerHTML = `<div class="big" style="--h:${hue(m.name)}"><span>${esc(m.name[0] || "🎬")}</span>${pimg(m)}</div>
     <h1>${esc(m.name)}</h1><div class="meta">${esc(meta) || "&nbsp;"}</div>
     <div class="muted">👁 ${m.views} · Kod: ${esc(m.code)}</div>
     ${m.description ? `<p style="margin-top:10px">${esc(m.description)}</p>` : ""}
     ${m.kind === "movie" ? `<button class="btn" id="play">▶️ Tomosha qilish</button>` : (next ? `<button class="btn" data-ep="${next}">▶️ ${m.last_episode ? "Davom ettirish" : "Boshlash"} (${next}-qism)</button>` : '<p class="muted">Qismlar hali qo\'shilmagan</p>')}
     <div class="two"><button class="btn alt" id="fav">${m.fav ? "💔 Olib tashlash" : "❤️ Sevimlilarga"}</button><button class="btn alt" id="share">📤 Ulashish</button></div>
-    ${eps}${ME.is_admin ? adminForm(m) : ""}`;
+    ${eps}${ME.is_admin ? posterBtn() + adminForm(m) : ""}`;
   view.onclick = e => { const ep = e.target.closest("[data-ep]"); if (ep) watch(m.code, +ep.dataset.ep); };
   const play = document.getElementById("play"); if (play) play.onclick = () => watch(m.code);
   document.getElementById("fav").onclick = async e => { const r = await api("/fav", {method: "POST", body: JSON.stringify({code: m.code})}); e.target.textContent = r.fav ? "💔 Olib tashlash" : "❤️ Sevimlilarga"; };
@@ -108,12 +109,28 @@ async function item(code) {
     const url = "https://t.me/share/url?url=" + encodeURIComponent(link) + "&text=" + encodeURIComponent("🎬 " + m.name);
     tg?.openTelegramLink ? tg.openTelegramLink(url) : window.open(url);
   };
+  const pin = document.getElementById("a-poster");
+  if (pin) pin.onchange = async () => {
+    if (!pin.files[0]) return;
+    try { toast("⏳ Yuklanmoqda…");
+      await api("/admin/poster/" + encodeURIComponent(m.code), {method: "PUT", body: await resizeImg(pin.files[0]), headers: {"Content-Type": "image/jpeg"}});
+      toast("✅ Poster saqlandi"); route();
+    } catch (e) { toast("⚠️ Poster yuklanmadi"); }
+  };
   const form = document.getElementById("aform");
   if (form) form.onsubmit = async e => { e.preventDefault();
     await api("/admin/item/" + encodeURIComponent(m.code), {method: "PUT", body: JSON.stringify({
       year: $v("a-year"), duration: $v("a-dur"), description: $v("a-desc"),
       genres: [...form.querySelectorAll("input[name=g]:checked")].map(i => i.value)})});
     toast("✅ Saqlandi"); route(); };
+}
+const posterBtn = () => `<label class="btn alt">🖼 Posterni o'zgartirish<input type="file" accept="image/*" id="a-poster" hidden></label>`;
+async function resizeImg(file) {
+  const img = await createImageBitmap(file), w = 600, h = 900, c = document.createElement("canvas");
+  c.width = w; c.height = h;
+  const k = Math.max(w / img.width, h / img.height);
+  c.getContext("2d").drawImage(img, (w - img.width * k) / 2, (h - img.height * k) / 2, img.width * k, img.height * k);
+  return new Promise(r => c.toBlob(r, "image/jpeg", 0.85));
 }
 const adminForm = m => `<details class="admin"><summary>✏️ Tahrirlash (admin)</summary><form id="aform">
   <input id="a-year" type="number" placeholder="Yil" value="${m.year || ""}">

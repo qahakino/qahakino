@@ -1,1 +1,1 @@
-from .api import WEBAPP_URL, migrate, setup_miniapp  # noqa: F401
+from .api import WEBAPP_URL, migrate, set_poster, setup_miniapp  # noqa: F401

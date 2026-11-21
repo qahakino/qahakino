@@ -41,3 +41,5 @@ nav a.on{color:var(--ac)}
 .admin{margin-top:16px;background:var(--card);border-radius:12px;padding:12px}.admin summary{cursor:pointer}
 .admin>*{margin-top:8px}.admin label{margin-right:10px;font-size:13px;display:inline-block}
 .admin input[type=checkbox]{width:auto}
+
+.pimg{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}

@@ -6,6 +6,7 @@ class AdminStates(StatesGroup):
     waiting_movie_name = State()
     waiting_movie_code = State()
     waiting_movie_content = State()
+    waiting_movie_poster = State()
 
     # Kino o'chirish
     waiting_delete_movie_code = State()

@@ -15,9 +15,10 @@ from urllib.parse import parse_qsl
 
 import aiosqlite
 from aiogram.exceptions import TelegramForbiddenError
+from aiogram.types import BufferedInputFile
 from aiohttp import web
 
-from config import ADMIN_IDS, BOT_TOKEN, REQUIRED_CHANNELS
+from config import ADMIN_IDS, BOT_TOKEN, REQUIRED_CHANNELS, STORAGE_CHANNEL_ID
 from database import db
 from utils.search import matches
 from utils.subscription import get_unsubscribed_channels
@@ -30,14 +31,14 @@ WEBAPP_URL = os.getenv("WEBAPP_URL", "https://qahakino-production.up.railway.app
 # Kino va seriallar bitta ro'yxat sifatida (kod ikkalasi uchun ham yagona)
 ITEMS = """
 SELECT code, name, 'movie' AS kind, release_year AS year, genres, views,
-       added_at AS created, description, duration_min AS duration
+       added_at AS created, description, duration_min AS duration, poster_file_id
 FROM movies WHERE is_active = 1
 UNION ALL
 SELECT code, name, 'series', release_year, genres, views,
-       created_at, description, NULL
+       created_at, description, NULL, poster_file_id
 FROM series WHERE is_active = 1
 """
-CARD = "SELECT code, name, kind, year, genres, views FROM (" + ITEMS + ")"
+CARD = "SELECT code, name, kind, year, genres, views, poster_file_id FROM (" + ITEMS + ")"
 
 
 # ---------------- migratsiya (faqat qo'shadi, hech narsani o'chirmaydi) ----------------
@@ -45,9 +46,9 @@ async def migrate():
     add = {
         "movies": [("description", "TEXT"), ("release_year", "INTEGER"), ("genres", "TEXT"),
                    ("duration_min", "INTEGER"), ("views", "INTEGER DEFAULT 0"),
-                   ("is_active", "INTEGER DEFAULT 1")],
+                   ("is_active", "INTEGER DEFAULT 1"), ("poster_file_id", "TEXT")],
         "series": [("description", "TEXT"), ("release_year", "INTEGER"), ("genres", "TEXT"),
-                   ("views", "INTEGER DEFAULT 0"), ("is_active", "INTEGER DEFAULT 1")],
+                   ("views", "INTEGER DEFAULT 0"), ("is_active", "INTEGER DEFAULT 1"), ("poster_file_id", "TEXT")],
     }
     async with aiosqlite.connect(db.path) as c:
         for table, cols in add.items():
@@ -85,7 +86,14 @@ async def execute(sql, args=()):
 
 def card(r):
     return {"code": r["code"], "name": r["name"] or "", "kind": r["kind"], "year": r["year"],
-            "genres": [g for g in (r["genres"] or "").split(",") if g], "views": r["views"] or 0}
+            "genres": [g for g in (r["genres"] or "").split(",") if g], "views": r["views"] or 0,
+            "poster": hashlib.md5(r["poster_file_id"].encode()).hexdigest()[:8] if r.get("poster_file_id") else None}
+
+
+async def set_poster(code: str, file_id: str):
+    """Poster Telegram file_id sifatida saqlanadi (kino yoki serial kodi bo'yicha)."""
+    await execute("UPDATE movies SET poster_file_id=? WHERE code=?", (file_id, code))
+    await execute("UPDATE series SET poster_file_id=? WHERE code=?", (file_id, code))
 
 
 def ok(data, status=200):
@@ -136,7 +144,7 @@ async def me(request):
     series = (await fetch("""SELECT COUNT(DISTINCT code) n FROM watch_history
         WHERE user_id=? AND code IN (SELECT code FROM series)""", (uid,)))[0]["n"]
     recent = await fetch(
-        f"""SELECT i.code, i.name, i.kind, i.year, i.genres, i.views FROM
+        f"""SELECT i.code, i.name, i.kind, i.year, i.genres, i.views, i.poster_file_id FROM
         (SELECT code, MAX(watched_at) w FROM watch_history WHERE user_id=? GROUP BY code
          ORDER BY w DESC LIMIT 10) h JOIN ({ITEMS}) i ON i.code = h.code""", (uid,))
     return ok({"bot": (await request.app["bot"].me()).username, "genres": GENRES,
@@ -202,7 +210,7 @@ async def item(request):
 
 async def favorites(request):
     rows = await fetch(
-        f"""SELECT i.code, i.name, i.kind, i.year, i.genres, i.views FROM favorites f
+        f"""SELECT i.code, i.name, i.kind, i.year, i.genres, i.views, i.poster_file_id FROM favorites f
         JOIN ({ITEMS}) i ON i.code = f.code WHERE f.user_id=? ORDER BY f.created_at DESC""",
         (request["user"]["id"],))
     return ok({"items": [card(r) for r in rows]})
@@ -284,16 +292,62 @@ async def admin_edit(request):
     return ok({"saved": True})
 
 
+_poster_cache: dict[str, tuple[str, bytes]] = {}
+
+
+async def poster(request):
+    """Poster rasmini Telegramdan olib beradi (bot tokeni foydalanuvchiga ko'rinmaydi)."""
+    code = request.match_info["code"]
+    rows = await fetch(f"SELECT poster_file_id f FROM ({ITEMS}) WHERE code=?", (code,))
+    fid = rows[0]["f"] if rows else None
+    if not fid:
+        raise web.HTTPNotFound()
+    hit = _poster_cache.get(code)
+    if not hit or hit[0] != fid:
+        try:
+            bot = request.app["bot"]
+            buf = await bot.download_file((await bot.get_file(fid)).file_path)
+        except Exception:
+            logging.exception("Poster yuklab bo'lmadi: %s", code)
+            raise web.HTTPNotFound()
+        if len(_poster_cache) > 300:
+            _poster_cache.pop(next(iter(_poster_cache)))
+        hit = _poster_cache[code] = (fid, buf.read())
+    return web.Response(body=hit[1], content_type="image/jpeg",
+                        headers={"Cache-Control": "public, max-age=604800"})
+
+
+async def admin_poster(request):
+    """Mini App'dan yuklangan posterni storage kanalga joylab, file_id ni saqlaydi."""
+    if request["user"]["id"] not in ADMIN_IDS:
+        return err("forbidden", 403)
+    code, data = request.match_info["code"], await request.read()
+    if not data or len(data) > 5 * 1024 * 1024 or not STORAGE_CHANNEL_ID:
+        return err("bad_image", 400)
+    if not await fetch(f"SELECT 1 FROM ({ITEMS}) WHERE code=?", (code,)):
+        return err("not_found", 404)
+    try:
+        msg = await request.app["bot"].send_photo(
+            chat_id=STORAGE_CHANNEL_ID, photo=BufferedInputFile(data, "poster.jpg"),
+            caption=f"🖼 Poster: {code}")
+    except Exception:
+        logging.exception("Poster yuborilmadi")
+        return err("send_failed", 502)
+    await set_poster(code, msg.photo[-1].file_id)
+    return ok({"saved": True})
+
+
 def setup_miniapp(app: web.Application, bot):
-    api = web.Application(middlewares=[auth_mw])
+    api = web.Application(middlewares=[auth_mw], client_max_size=6 * 1024 * 1024)
     api["bot"] = bot
     api.add_routes([
         web.get("/me", me), web.get("/home", home), web.get("/catalog", catalog),
         web.get("/random", random_item), web.get("/item/{code}", item),
         web.get("/favorites", favorites), web.post("/fav", toggle_fav),
-        web.post("/watch", watch), web.put("/admin/item/{code}", admin_edit),
+        web.post("/watch", watch), web.put("/admin/item/{code}", admin_edit), web.put("/admin/poster/{code}", admin_poster),
     ])
     app.add_subapp("/api", api)
+    app.router.add_get("/poster/{code}", poster)
 
     nocache = {"Cache-Control": "no-cache"}
     app.router.add_get("/app", lambda r: web.HTTPFound("/app/"))

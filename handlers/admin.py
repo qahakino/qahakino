@@ -13,6 +13,7 @@ from aiogram.types import (
 
 from config import ADMIN_IDS, MAX_DOWNLOAD_BYTES, STORAGE_CHANNEL_ID
 from database import db
+from miniapp import set_poster
 from keyboards import admin_clips_keyboard, serial_admin_keyboard
 from utils.parts import parse_parts
 from states import AdminStates
@@ -148,21 +149,55 @@ async def process_movie_content(
             message_id=message_id,
         )
 
+        await state.set_state(AdminStates.waiting_movie_poster)
+
         await message.answer(
             "✅ <b>Kino muvaffaqiyatli qo'shildi!</b>\n\n"
             f"🎬 Nomi: <b>{movie_name}</b>\n"
             f"🔑 Kodi: <b>{movie_code}</b>\n"
-            f"📦 Storage message ID: <code>{message_id}</code>"
+            f"📦 Storage message ID: <code>{message_id}</code>\n\n"
+            "🖼 Endi kino <b>posterini rasm</b> qilib yuboring.\n"
+            "Poster kerak bo'lmasa: /skip"
         )
 
     except Exception as e:
+        await state.clear()
         await message.answer(
             "❌ Kino qo'shishda xatolik yuz berdi.\n\n"
             f"<code>{e}</code>"
         )
 
-    finally:
-        await state.clear()
+
+@router.message(StateFilter(AdminStates.waiting_movie_poster), F.photo)
+async def process_movie_poster(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    code = (await state.get_data()).get("movie_code")
+    await state.clear()
+    if code:
+        await set_poster(code, message.photo[-1].file_id)
+    await message.answer(
+        "✅ Poster saqlandi. Keyinroq o'zgartirish: Mini App → kino sahifasi → "
+        "«🖼 Posterni o'zgartirish»."
+    )
+
+
+@router.message(StateFilter(AdminStates.waiting_movie_poster), Command("skip"))
+async def skip_movie_poster(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    await state.clear()
+    await message.answer("👌 Poster qo'shilmadi. Keyin Mini App orqali qo'shishingiz mumkin.")
+
+
+@router.message(
+    StateFilter(AdminStates.waiting_movie_poster),
+    ~F.text.startswith("/"),
+)
+async def movie_poster_wrong_type(message: Message):
+    if not is_admin(message.from_user.id):
+        return
+    await message.answer("❌ Poster rasm (photo) bo'lishi kerak. Rasm yuboring yoki /skip.")
 
 
 # ============================================================
@@ -688,6 +723,7 @@ async def process_series_poster(
         await state.update_data(
             poster_chat_id=poster_chat_id,
             poster_message_id=poster_message_id,
+            poster_file_id=message.photo[-1].file_id,
         )
 
         await state.set_state(
@@ -946,6 +982,8 @@ async def process_episode_video(
             poster_chat_id=poster_chat_id,
             poster_message_id=poster_message_id,
         )
+        if data.get("poster_file_id"):
+            await set_poster(series_code, data["poster_file_id"])
 
         # Birinchi qismni Storage'ga saqlaymiz
         chat_id, message_id = await save_to_storage(
