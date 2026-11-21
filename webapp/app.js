@@ -16,10 +16,10 @@ async function api(path, opts = {}) {
 }
 function toast(text, withChat) {
   const t = document.getElementById("toast");
-  t.hidden = false;
+  t.hidden = false; t.style.display = "";
   t.innerHTML = `<span>${esc(text)}</span>` + (withChat ? `<button id="tchat">Chatga o'tish</button>` : "");
   if (withChat) document.getElementById("tchat").onclick = () => tg?.close();
-  clearTimeout(toast.t); toast.t = setTimeout(() => t.hidden = true, 5000);
+  clearTimeout(toast.t); toast.t = setTimeout(() => { t.hidden = true; t.style.display = "none"; }, 5000);
 }
 
 const pimg = m => m.poster ? `<img class="pimg" loading="lazy" src="/poster/${encodeURIComponent(m.code)}?v=${m.poster}" onerror="this.remove()" alt="">` : "";

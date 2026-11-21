@@ -349,6 +349,11 @@ def setup_miniapp(app: web.Application, bot):
     app.add_subapp("/api", api)
     app.router.add_get("/poster/{code}", poster)
 
+    async def _nocache(request, response):  # Telegram eski CSS/JS ni keshlab qolmasligi uchun
+        if request.path.startswith("/app"):
+            response.headers["Cache-Control"] = "no-cache"
+
+    app.on_response_prepare.append(_nocache)
     nocache = {"Cache-Control": "no-cache"}
     app.router.add_get("/app", lambda r: web.HTTPFound("/app/"))
     app.router.add_get("/app/", lambda r: web.FileResponse(WEBAPP_DIR / "index.html", headers=nocache))
