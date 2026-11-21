@@ -164,6 +164,10 @@ async def main():
                     description="Ovozli parchalar ro‘yxati"
                 ),
                 BotCommand(
+                    command="poster",
+                    description="Kinoga poster ulash"
+                ),
+                BotCommand(
                     command="cancel",
                     description="Amalni bekor qilish"
                 ),

@@ -3,7 +3,7 @@ import json
 import logging
 
 from aiogram import Bot, F, Router
-from aiogram.filters import Command, StateFilter
+from aiogram.filters import Command, CommandObject, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import (
     CallbackQuery,
@@ -233,6 +233,81 @@ async def save_to_storage(
     )
 
     return STORAGE_CHANNEL_ID, copied.message_id
+
+
+# ============================================================
+# /POSTER — ESKI KINO YOKI SERIALGA POSTER ULASH
+# ============================================================
+
+async def _ask_poster_photo(message: Message, state: FSMContext, code: str):
+    if not await db.code_exists(code):
+        await state.set_state(AdminStates.waiting_poster_code)
+        await message.answer(
+            "❌ Bunday kodli kino yoki serial topilmadi.\n"
+            "Kodni qayta kiriting yoki /cancel:"
+        )
+        return
+    await state.update_data(poster_code=code)
+    await state.set_state(AdminStates.waiting_poster_photo)
+    await message.answer(
+        f"🔑 Kod: <b>{html.escape(code)}</b>\n\n"
+        "🖼 Endi poster rasmini (photo) yuboring:"
+    )
+
+
+@router.message(Command("poster"))
+async def cmd_poster(message: Message, state: FSMContext, command: CommandObject):
+    if not is_admin(message.from_user.id):
+        return
+    await state.clear()
+    code = (command.args or "").strip()
+    if code:  # /poster 101
+        await _ask_poster_photo(message, state, code)
+        return
+    await state.set_state(AdminStates.waiting_poster_code)
+    await message.answer(
+        "🖼 <b>Poster ulash</b>\n\n"
+        "Kino yoki serial kodini kiriting:"
+    )
+
+
+@router.message(
+    StateFilter(AdminStates.waiting_poster_code),
+    F.text,
+    ~F.text.startswith("/"),
+)
+async def process_poster_code(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    await _ask_poster_photo(message, state, message.text.strip())
+
+
+@router.message(StateFilter(AdminStates.waiting_poster_photo), F.photo)
+async def process_poster_photo(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    code = (await state.get_data()).get("poster_code")
+    if not code:
+        await state.clear()
+        await message.answer("❌ Ma'lumot yo'qolgan. /poster orqali qaytadan boshlang.")
+        return
+    await set_poster(code, message.photo[-1].file_id)
+    # Eski kinolar ko'p bo'lsa qulay: keyingi kodni darrov so'raymiz
+    await state.set_state(AdminStates.waiting_poster_code)
+    await message.answer(
+        f"✅ <b>{html.escape(code)}</b> uchun poster saqlandi.\n\n"
+        "Keyingi kino kodini yuboring yoki tugatish uchun /cancel:"
+    )
+
+
+@router.message(
+    StateFilter(AdminStates.waiting_poster_photo),
+    ~F.text.startswith("/"),
+)
+async def poster_wrong_type(message: Message):
+    if not is_admin(message.from_user.id):
+        return
+    await message.answer("❌ Rasm (photo) yuboring yoki /cancel.")
 
 
 # ============================================================

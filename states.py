@@ -8,6 +8,10 @@ class AdminStates(StatesGroup):
     waiting_movie_content = State()
     waiting_movie_poster = State()
 
+    # Eski kino/serialga poster ulash (/poster)
+    waiting_poster_code = State()
+    waiting_poster_photo = State()
+
     # Kino o'chirish
     waiting_delete_movie_code = State()
 

@@ -1,6 +1,6 @@
 const tg = window.Telegram?.WebApp;
 tg?.ready(); tg?.expand();
-tg?.setHeaderColor?.("#0e0f13"); tg?.setBackgroundColor?.("#0e0f13");
+tg?.setHeaderColor?.("#120f1d"); tg?.setBackgroundColor?.("#120f1d");
 const view = document.getElementById("view");
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const hue = s => [...String(s)].reduce((a, c) => (a * 31 + c.charCodeAt(0)) % 360, 7);
@@ -24,17 +24,18 @@ function toast(text, withChat) {
 
 const pimg = m => m.poster ? `<img class="pimg" loading="lazy" src="/poster/${encodeURIComponent(m.code)}?v=${m.poster}" onerror="this.remove()" alt="">` : "";
 const card = m => `<a class="card" href="#/item/${encodeURIComponent(m.code)}"><div class="poster" style="--h:${hue(m.name)}"><span>${esc(m.name.trim()[0] || "🎬")}</span>${pimg(m)}${m.kind === "series" ? '<i class="tag">Serial</i>' : ""}</div><div class="t">${esc(m.name)}</div><div class="s">${m.year || ""}${m.views ? ` · 👁 ${m.views}` : ""}</div></a>`;
-const row = (title, items) => items.length ? `<h2>${title}</h2><div class="row">${items.map(card).join("")}</div>` : "";
+const GI = {Jangari:"💥",Komediya:"😂",Drama:"🎭",Fantastika:"🚀",Triller:"🔪",Sarguzasht:"🧭","Qo'rqinchli":"👻",Romantika:"💘",Multfilm:"🧸"};
+const row = (title, items, link) => items.length ? `<div class="sec"><h2>${title}</h2>${link ? `<a href="${link}">Barchasi</a>` : ""}</div><div class="row">${items.map(card).join("")}</div>` : "";
 
 // ---------- sahifalar ----------
 async function home() {
   const d = await api("/home");
   const top = d.popular[0];
   view.innerHTML =
-    (top ? `<a class="hero" href="#/item/${encodeURIComponent(top.code)}"><div class="poster" style="--h:${hue(top.name)}"><span>${esc(top.name[0])}</span>${pimg(top)}</div><div><div class="muted">Tavsiya etamiz</div><h3>${esc(top.name)}</h3><div class="meta">${[top.year, top.genres.join(", ")].filter(Boolean).join(" · ")}</div><span class="btn sm">Batafsil</span></div></a>` : "") +
-    `<button class="btn alt" id="rnd">🎲 Tasodifiy kino</button>` +
-    row("🆕 Yangi qo'shilganlar", d.latest) + row("🔥 Mashhur", d.popular) + row("📺 Seriallar", d.series) +
-    `<h2>Janrlar</h2><div class="chips">${ME.genres.map(g => `<a class="chip" href="#/catalog?genre=${encodeURIComponent(g)}">${esc(g)}</a>`).join("")}</div>`;
+    (top ? `<a class="hero" style="--h:${hue(top.name)}" href="#/item/${encodeURIComponent(top.code)}">${pimg(top)}<div class="hin"><span class="pill">Bugungi tavsiya</span><h3>${esc(top.name)}</h3><div class="meta">${esc([top.year, top.genres.join(", ")].filter(Boolean).join(", "))}</div><span class="btn sm">Batafsil</span></div></a>` : "") +
+    `<button class="rnd" id="rnd"><b>Nima ko'rishni bilmayapsizmi?</b><span>Tasodifiy kino tanlash</span></button>` +
+    row("Yangi qo'shilganlar", d.latest, "#/catalog?sort=new&type=movie") + row("Mashhur", d.popular, "#/catalog?sort=popular") + row("Seriallar", d.series, "#/catalog?type=series") +
+    `<div class="sec"><h2>Janrlar</h2></div><div class="chips" style="margin-top:0">${ME.genres.map(g => `<a class="chip" href="#/catalog?genre=${encodeURIComponent(g)}"><i>${GI[g] || "🎞"}</i>${esc(g)}</a>`).join("")}</div>`;
   document.getElementById("rnd").onclick = async () => { const r = await api("/random"); if (r.code) location.hash = "#/item/" + encodeURIComponent(r.code); };
 }
 
@@ -55,7 +56,7 @@ async function catalog(_, p) {
     const d = await api("/catalog?" + new URLSearchParams({...f, offset, limit: 20}));
     grid.insertAdjacentHTML("beforeend", d.items.map(card).join(""));
     offset += d.items.length; more.hidden = !d.has_more;
-    if (!offset) grid.innerHTML = '<p class="muted">Hech narsa topilmadi</p>';
+    if (!offset) grid.innerHTML = '<div class="empty" style="grid-column:1/-1"><b>Hech narsa topilmadi</b>Filtrlarni o\'zgartirib ko\'ring.</div>';
   }
   more.onclick = load; await load();
 }
@@ -67,13 +68,13 @@ function search() {
   q.oninput = () => { clearTimeout(timer); timer = setTimeout(async () => {
     const t = q.value.trim(); if (t.length < 1) { res.innerHTML = ""; return; }
     const d = await api("/catalog?" + new URLSearchParams({q: t, limit: 30}));
-    res.innerHTML = d.items.length ? d.items.map(card).join("") : '<p class="muted">Topilmadi</p>';
+    res.innerHTML = d.items.length ? d.items.map(card).join("") : '<div class="empty" style="grid-column:1/-1"><b>Topilmadi</b>Nomini boshqacha yozing yoki kodni kiriting.</div>';
   }, 300); };
 }
 
 async function fav() {
   const d = await api("/favorites");
-  view.innerHTML = `<h1>❤️ Sevimlilar</h1>` + (d.items.length ? `<div class="grid">${d.items.map(card).join("")}</div>` : '<p class="muted">Hozircha bo\'sh. Kino sahifasidagi ❤️ tugmasini bosing.</p>');
+  view.innerHTML = `<h1>Sevimlilar</h1>` + (d.items.length ? `<div class="grid">${d.items.map(card).join("")}</div>` : '<div class="empty"><b>Sevimlilar bo\'sh</b>Kino sahifasidagi «Sevimlilarga» tugmasini bosing.</div>');
 }
 
 async function profile() {
@@ -84,7 +85,7 @@ async function profile() {
     <h1>${esc([u.first_name, u.last_name].filter(Boolean).join(" ") || "Foydalanuvchi")}</h1>
     <div class="muted">${u.username ? "@" + esc(u.username) + " · " : ""}ID: ${esc(u.id || "")}</div></div>
     <div class="stats"><div><b>${s.movies}</b>Kino</div><div><b>${s.series}</b>Serial</div><div><b>${s.favs}</b>Sevimli</div></div>
-    ${row("🕘 Oxirgi ko'rilganlar", ME.recent)}
+    ${row("Oxirgi ko'rilganlar", ME.recent)}
     <button class="btn alt" id="tobot">🤖 Botga qaytish</button>`;
   document.getElementById("tobot").onclick = () => tg?.close();
 }
@@ -92,18 +93,21 @@ async function profile() {
 async function item(code) {
   const m = await api("/item/" + encodeURIComponent(code));
   const meta = [m.year, m.duration && m.duration + " daq", m.genres.join(", ")].filter(Boolean).join(" · ");
-  const eps = m.episodes.length ? `<h2>Qismlar (${m.episodes.length})</h2><div class="eps">${m.episodes.map(n => `<button data-ep="${n}" class="${n === m.last_episode ? "on" : ""}">${n}</button>`).join("")}</div>` : "";
+  const eps = m.episodes.length ? `<div class="sec"><h2>Qismlar</h2></div><div class="eps">${m.episodes.map(n => `<button data-ep="${n}" class="${n === m.last_episode ? "on" : ""}">${n}</button>`).join("")}</div>` : "";
   const next = m.kind === "series" && m.episodes.length ? (m.episodes.find(n => n > (m.last_episode || 0)) || m.episodes[0]) : null;
-  view.innerHTML = `<div class="big" style="--h:${hue(m.name)}"><span>${esc(m.name[0] || "🎬")}</span>${pimg(m)}</div>
-    <h1>${esc(m.name)}</h1><div class="meta">${esc(meta) || "&nbsp;"}</div>
-    <div class="muted">👁 ${m.views} · Kod: ${esc(m.code)}</div>
-    ${m.description ? `<p style="margin-top:10px">${esc(m.description)}</p>` : ""}
-    ${m.kind === "movie" ? `<button class="btn" id="play">▶️ Tomosha qilish</button>` : (next ? `<button class="btn" data-ep="${next}">▶️ ${m.last_episode ? "Davom ettirish" : "Boshlash"} (${next}-qism)</button>` : '<p class="muted">Qismlar hali qo\'shilmagan</p>')}
-    <div class="two"><button class="btn alt" id="fav">${m.fav ? "💔 Olib tashlash" : "❤️ Sevimlilarga"}</button><button class="btn alt" id="share">📤 Ulashish</button></div>
+  view.innerHTML = `<div class="ibg" style="--h:${hue(m.name)}">${pimg(m)}</div>
+    <div class="big" style="--h:${hue(m.name)}"><span>${esc(m.name[0] || "🎬")}</span>${pimg(m)}</div>
+    <h1 class="ttl">${esc(m.name)}</h1>
+    <div class="facts">${[m.year, m.duration && m.duration + " daq", m.kind === "series" && m.episodes.length + " qism", "👁 " + m.views].filter(Boolean).map(x => `<span>${esc(x)}</span>`).join("")}</div>
+    ${m.genres.length ? `<div class="chips" style="justify-content:center">${m.genres.map(g => `<span class="chip">${esc(g)}</span>`).join("")}</div>` : ""}
+    <div class="ticket"><span>Kino kodi</span><b>${esc(m.code)}</b></div>
+    ${m.description ? `<p class="desc">${esc(m.description)}</p>` : ""}
+    ${m.kind === "movie" ? `<button class="btn" id="play">▶ Tomosha qilish</button>` : (next ? `<button class="btn" data-ep="${next}">▶ ${m.last_episode ? "Davom ettirish" : "Boshlash"} (${next}-qism)</button>` : '<p class="muted">Qismlar hali qo\'shilmagan</p>')}
+    <div class="two"><button class="btn alt" id="fav">${m.fav ? "♥ Sevimlilarda" : "♡ Sevimlilarga"}</button><button class="btn alt" id="share">Ulashish</button></div>
     ${eps}${ME.is_admin ? posterBtn() + adminForm(m) : ""}`;
   view.onclick = e => { const ep = e.target.closest("[data-ep]"); if (ep) watch(m.code, +ep.dataset.ep); };
   const play = document.getElementById("play"); if (play) play.onclick = () => watch(m.code);
-  document.getElementById("fav").onclick = async e => { const r = await api("/fav", {method: "POST", body: JSON.stringify({code: m.code})}); e.target.textContent = r.fav ? "💔 Olib tashlash" : "❤️ Sevimlilarga"; };
+  document.getElementById("fav").onclick = async e => { const r = await api("/fav", {method: "POST", body: JSON.stringify({code: m.code})}); e.target.textContent = r.fav ? "♥ Sevimlilarda" : "♡ Sevimlilarga"; };
   document.getElementById("share").onclick = () => {
     const link = `https://t.me/${ME.bot}?startapp=${b64e(m.code)}`;
     const url = "https://t.me/share/url?url=" + encodeURIComponent(link) + "&text=" + encodeURIComponent("🎬 " + m.name);
@@ -161,6 +165,7 @@ async function route() {
   document.querySelectorAll("nav a").forEach(a => a.classList.toggle("on", a.dataset.r === name));
   tg?.BackButton[name === "item" ? "show" : "hide"]();
   view.onclick = null;
+  view.innerHTML = `<div class="grid" style="margin-top:14px">${"<div class='sk'></div>".repeat(6)}</div>`;
   try { await routes[name](decodeURIComponent(parts[1] || ""), new URLSearchParams(qs || "")); }
   catch (e) { view.innerHTML = `<p class="err">${e.status === 404 ? "Topilmadi" : "Xatolik: " + esc(e.message)}</p>`; }
   window.scrollTo(0, 0);
