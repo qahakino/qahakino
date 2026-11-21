@@ -23,7 +23,7 @@ function toast(text, withChat) {
 }
 
 const pimg = m => m.poster ? `<img class="pimg" loading="lazy" src="/poster/${encodeURIComponent(m.code)}?v=${m.poster}" onerror="this.remove()" alt="">` : "";
-const card = m => `<a class="card" href="#/item/${encodeURIComponent(m.code)}"><div class="poster" style="--h:${hue(m.name)}"><span>${esc(m.name.trim()[0] || "🎬")}</span>${pimg(m)}${m.kind === "series" ? '<i class="tag">Serial</i>' : ""}</div><div class="t">${esc(m.name)}</div><div class="s">${m.year || ""}${m.views ? ` · 👁 ${m.views}` : ""}</div></a>`;
+const card = m => `<a class="card" href="#/item/${encodeURIComponent(m.code)}"><div class="poster" style="--h:${hue(m.name)}"><span class="ph">${esc(m.name)}</span>${pimg(m)}${m.kind === "series" ? '<i class="tag">Serial</i>' : ""}</div><div class="t">${esc(m.name)}</div><div class="s">${m.year || ""}${m.views ? ` · 👁 ${m.views}` : ""}</div></a>`;
 const GI = {Jangari:"💥",Komediya:"😂",Drama:"🎭",Fantastika:"🚀",Triller:"🔪",Sarguzasht:"🧭","Qo'rqinchli":"👻",Romantika:"💘",Multfilm:"🧸"};
 const row = (title, items, link) => items.length ? `<div class="sec"><h2>${title}</h2>${link ? `<a href="${link}">Barchasi</a>` : ""}</div><div class="row">${items.map(card).join("")}</div>` : "";
 
