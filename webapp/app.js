@@ -23,7 +23,8 @@ function toast(text, withChat) {
 }
 
 const pimg = m => m.poster ? `<img class="pimg" loading="lazy" src="/poster/${encodeURIComponent(m.code)}?v=${m.poster}" onerror="this.remove()" alt="">` : "";
-const card = m => `<a class="card" href="#/item/${encodeURIComponent(m.code)}"><div class="poster" style="--h:${hue(m.name)}"><span class="ph">${esc(m.name)}</span>${pimg(m)}${m.kind === "series" ? '<i class="tag">Serial</i>' : ""}</div><div class="t">${esc(m.name)}</div><div class="s">${m.year || ""}${m.views ? ` · 👁 ${m.views}` : ""}</div></a>`;
+const EYE = '<svg class="eye" viewBox="0 0 24 24"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>';
+const card = m => `<a class="card" href="#/item/${encodeURIComponent(m.code)}"><div class="poster" style="--h:${hue(m.name)}"><span class="ph">${esc(m.name)}</span>${pimg(m)}${m.kind === "series" ? '<i class="tag">Serial</i>' : ""}${m.views ? `<span class="vw">${EYE}${m.views}</span>` : ""}</div><div class="t">${esc(m.name)}</div>${m.year ? `<div class="s">${m.year}</div>` : ""}</a>`;
 const GI = {Jangari:"💥",Komediya:"😂",Drama:"🎭",Fantastika:"🚀",Triller:"🔪",Sarguzasht:"🧭","Qo'rqinchli":"👻",Romantika:"💘",Multfilm:"🧸"};
 const row = (title, items, link) => items.length ? `<div class="sec"><h2>${title}</h2>${link ? `<a href="${link}">Barchasi</a>` : ""}</div><div class="row">${items.map(card).join("")}</div>` : "";
 
@@ -92,13 +93,12 @@ async function profile() {
 
 async function item(code) {
   const m = await api("/item/" + encodeURIComponent(code));
-  const meta = [m.year, m.duration && m.duration + " daq", m.genres.join(", ")].filter(Boolean).join(" · ");
   const eps = m.episodes.length ? `<div class="sec"><h2>Qismlar</h2></div><div class="eps">${m.episodes.map(n => `<button data-ep="${n}" class="${n === m.last_episode ? "on" : ""}">${n}</button>`).join("")}</div>` : "";
   const next = m.kind === "series" && m.episodes.length ? (m.episodes.find(n => n > (m.last_episode || 0)) || m.episodes[0]) : null;
   view.innerHTML = `<div class="ibg" style="--h:${hue(m.name)}">${pimg(m)}</div>
     <div class="big" style="--h:${hue(m.name)}"><span>${esc(m.name[0] || "🎬")}</span>${pimg(m)}</div>
     <h1 class="ttl">${esc(m.name)}</h1>
-    <div class="facts">${[m.year, m.duration && m.duration + " daq", m.kind === "series" && m.episodes.length + " qism", "👁 " + m.views].filter(Boolean).map(x => `<span>${esc(x)}</span>`).join("")}</div>
+    <div class="facts">${[m.year, m.duration && m.duration + " daq", m.kind === "series" && m.episodes.length + " qism"].filter(Boolean).map(x => `<span>${esc(x)}</span>`).join("")}<span class="vw">${EYE}${m.views}</span></div>
     ${m.genres.length ? `<div class="chips" style="justify-content:center">${m.genres.map(g => `<span class="chip">${esc(g)}</span>`).join("")}</div>` : ""}
     <div class="ticket"><span>Kino kodi</span><b>${esc(m.code)}</b></div>
     ${m.description ? `<p class="desc">${esc(m.description)}</p>` : ""}
