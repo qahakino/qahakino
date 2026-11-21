@@ -24,7 +24,7 @@ from utils.media import ffmpeg_available
 
 
 WEBHOOK_PATH = "/webhook"
-WEBHOOK_URL = "https://qaxakinobot-production.up.railway.app/webhook"
+WEBHOOK_URL = "https://qahakino-production.up.railway.app/webhook"
 
 
 async def health(request):
