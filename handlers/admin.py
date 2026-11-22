@@ -1,12 +1,20 @@
+import asyncio
+import gzip
 import html
 import json
 import logging
+import shutil
+import tempfile
+from datetime import datetime
+from pathlib import Path
 
+import aiosqlite
 from aiogram import Bot, F, Router
 from aiogram.filters import Command, CommandObject, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import (
     CallbackQuery,
+    FSInputFile,
     Message,
     MessageOriginChannel,
 )
@@ -545,6 +553,69 @@ async def delete_content_by_code(
         f"<b>{failed_deletes} ta</b>\n\n"
         "✅ Database'dan serial va uning qismlari o'chirildi."
     )
+
+
+# ============================================================
+# /BACKUP — BAZANI YUKLAB OLISH (boshqa serverga ko'chirish uchun)
+# ============================================================
+
+TELEGRAM_FILE_LIMIT = 49 * 1024 * 1024  # bot orqali fayl yuborish chegarasi ~50 MB
+
+
+def _gzip_file(src: Path, dst: Path):
+    with open(src, "rb") as f_in, gzip.open(dst, "wb") as f_out:
+        shutil.copyfileobj(f_in, f_out)
+
+
+@router.message(Command("backup"))
+async def cmd_backup(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+
+    await state.clear()
+    status = await message.answer("⏳ Baza nusxasi tayyorlanmoqda...")
+
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            stamp = datetime.now().strftime("%Y-%m-%d_%H%M")
+            snapshot = Path(tmp) / f"qaxakino_{stamp}.db"
+
+            # VACUUM INTO — bot ishlab turgan paytda ham butun va buzilmagan nusxa beradi
+            async with aiosqlite.connect(db.path) as conn:
+                await conn.execute("VACUUM INTO ?", (str(snapshot),))
+
+            send_path = snapshot
+            if snapshot.stat().st_size > TELEGRAM_FILE_LIMIT:
+                send_path = Path(str(snapshot) + ".gz")
+                await asyncio.to_thread(_gzip_file, snapshot, send_path)
+
+            if send_path.stat().st_size > TELEGRAM_FILE_LIMIT:
+                await status.edit_text(
+                    "❌ Baza Telegram orqali yuborish uchun juda katta (50 MB dan oshdi).\n"
+                    "Uni Railway Volume'dan yuklab oling."
+                )
+                return
+
+            size_mb = send_path.stat().st_size / (1024 * 1024)
+            await message.answer_document(
+                FSInputFile(send_path),
+                caption=(
+                    "💾 <b>Baza nusxasi</b>\n\n"
+                    f"👥 Foydalanuvchilar: <b>{await db.users_count()}</b>\n"
+                    f"🎬 Kinolar: <b>{await db.movies_count()}</b>\n"
+                    f"📺 Seriallar: <b>{await db.series_count()}</b>\n"
+                    f"📦 Hajmi: <b>{size_mb:.2f} MB</b>\n\n"
+                    "⚠️ Faylda foydalanuvchi ma'lumotlari bor — begonalarga bermang."
+                ),
+            )
+        await status.delete()
+
+    except Exception as e:
+        logging.exception("Backup xatosi")
+        await status.edit_text(
+            "❌ Baza nusxasini olishda xatolik yuz berdi.\n\n"
+            f"<code>{html.escape(str(e))}</code>"
+        )
 
 
 # ============================================================
