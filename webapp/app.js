@@ -93,8 +93,9 @@ async function profile() {
 
 async function item(code) {
   const m = await api("/item/" + encodeURIComponent(code));
-  const eps = m.episodes.length ? `<div class="sec"><h2>Qismlar</h2></div><div class="eps">${m.episodes.map(n => `<button data-ep="${n}" class="${n === m.last_episode ? "on" : ""}">${n}</button>`).join("")}</div>` : "";
   const next = m.kind === "series" && m.episodes.length ? (m.episodes.find(n => n > (m.last_episode || 0)) || m.episodes[0]) : null;
+  const playTxt = n => "▶ Tomosha qilish" + (n ? ` · ${n}-qism` : "");
+  const eps = m.episodes.length ? `<div class="sec"><h2>Qismlar</h2></div><div class="eps">${m.episodes.map(n => `<button data-ep="${n}" class="${n === next ? "on" : n <= (m.last_episode || 0) ? "seen" : ""}">${n}</button>`).join("")}</div>` : "";
   view.innerHTML = `<div class="ibg" style="--h:${hue(m.name)}">${pimg(m)}</div>
     <div class="big" style="--h:${hue(m.name)}"><span>${esc(m.name[0] || "🎬")}</span>${pimg(m)}</div>
     <h1 class="ttl">${esc(m.name)}</h1>
@@ -102,11 +103,20 @@ async function item(code) {
     ${m.genres.length ? `<div class="chips" style="justify-content:center">${m.genres.map(g => `<span class="chip">${esc(g)}</span>`).join("")}</div>` : ""}
     <div class="ticket"><span>Kino kodi</span><b>${esc(m.code)}</b></div>
     ${m.description ? `<p class="desc">${esc(m.description)}</p>` : ""}
-    ${m.kind === "movie" ? `<button class="btn" id="play">▶ Tomosha qilish</button>` : (next ? `<button class="btn" data-ep="${next}">▶ ${m.last_episode ? "Davom ettirish" : "Boshlash"} (${next}-qism)</button>` : '<p class="muted">Qismlar hali qo\'shilmagan</p>')}
+    ${m.kind === "movie" || next ? `<button class="btn" id="play">${playTxt(next)}</button>` : '<p class="muted">Qismlar hali qo\'shilmagan</p>'}
     <div class="two"><button class="btn alt" id="fav">${m.fav ? "♥ Sevimlilarda" : "♡ Sevimlilarga"}</button><button class="btn alt" id="share">Ulashish</button></div>
     ${eps}${ME.is_admin ? posterBtn() + adminForm(m) : ""}`;
-  view.onclick = e => { const ep = e.target.closest("[data-ep]"); if (ep) watch(m.code, +ep.dataset.ep); };
-  const play = document.getElementById("play"); if (play) play.onclick = () => watch(m.code);
+  let sel = next;
+  const play = document.getElementById("play");
+  const setSel = n => { sel = n; view.querySelectorAll(".eps button").forEach(b => b.classList.toggle("on", +b.dataset.ep === n)); if (play) play.textContent = playTxt(n); };
+  view.onclick = e => { const b = e.target.closest(".eps [data-ep]"); if (b) setSel(+b.dataset.ep); };
+  if (play) play.onclick = async () => {
+    if (!(await watch(m.code, sel))) return;
+    if (sel) {  // yuborilgan qism "ko'rilgan" bo'ladi, keyingisi avtomatik tanlanadi
+      view.querySelector(`.eps [data-ep="${sel}"]`)?.classList.add("seen");
+      const n = m.episodes[m.episodes.indexOf(sel) + 1]; if (n) setSel(n);
+    }
+  };
   document.getElementById("fav").onclick = async e => { const r = await api("/fav", {method: "POST", body: JSON.stringify({code: m.code})}); e.target.textContent = r.fav ? "♥ Sevimlilarda" : "♡ Sevimlilarga"; };
   document.getElementById("share").onclick = () => {
     const link = `https://t.me/${ME.bot}?startapp=${b64e(m.code)}`;
@@ -148,6 +158,7 @@ async function watch(code, episode) {
     await api("/watch", {method: "POST", body: JSON.stringify({code, episode})});
     tg?.HapticFeedback?.notificationOccurred("success");
     toast("✅ Video botga yuborildi", true);
+    return true;
   } catch (e) {
     const d = e.data || {};
     if (d.error === "subscribe") { const l = d.channels?.[0]; tg ? tg.showAlert("Avval kanalga obuna bo'ling, so'ng qayta urinib ko'ring.", () => l && tg.openLink(l)) : alert("Kanalga obuna bo'ling"); }
@@ -155,6 +166,7 @@ async function watch(code, episode) {
     else if (d.error === "too_fast") toast("⏳ Biroz kuting…");
     else toast("⚠️ Yuborib bo'lmadi, keyinroq urinib ko'ring");
   }
+  return false;
 }
 
 // ---------- router ----------

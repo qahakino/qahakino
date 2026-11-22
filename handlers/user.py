@@ -812,10 +812,15 @@ async def show_series_episodes(callback: CallbackQuery, bot: Bot):
         return
 
     await callback.answer()
-    await callback.message.answer(
-        f"📺 <b>{html.escape(series[2])}</b>\n\nQismni tanlang:",
-        reply_markup=series_episodes_keyboard(episodes),
-    )
+    keyboard = series_episodes_keyboard(episodes, series_id=series_id)
+    try:
+        # Poster xabarining o'zida qismlar tugmalari chiqadi (yangi xabar ochilmaydi)
+        await callback.message.edit_reply_markup(reply_markup=keyboard)
+    except Exception:
+        await callback.message.answer(
+            f"📺 <b>{html.escape(series[2])}</b>\n\nQismni tanlang:",
+            reply_markup=keyboard,
+        )
 
 
 @router.callback_query(F.data.startswith("series_episode:"))
@@ -829,19 +834,59 @@ async def send_series_episode(callback: CallbackQuery, bot: Bot):
         await callback.answer("❌ Bu qism topilmadi.", show_alert=True)
         return
 
-    _, _series_id, episode_number, chat_id, message_id = episode
+    _, series_id, episode_number, chat_id, message_id = episode
+    episodes = await db.get_episodes(series_id)
 
     await callback.answer(f"▶️ {episode_number}-qism yuborilmoqda...")
     try:
+        # Tugmalar yuborilgan qismning O'ZIGA ulanadi: keyingi qismni
+        # darrov shu videoning ostidan tanlab ketish mumkin.
         await bot.copy_message(
             chat_id=callback.message.chat.id,
             from_chat_id=chat_id,
             message_id=message_id,
+            reply_markup=series_episodes_keyboard(
+                episodes, series_id=series_id, current=episode_number
+            ),
         )
     except Exception:
         await callback.message.answer(
             "⚠️ Qismni yuborishda xatolik yuz berdi. Birozdan so'ng qaytadan urinib ko'ring."
         )
+        return
+
+    # Yuqoridagi (eski) xabardagi tugmalar yo'qoladi
+    try:
+        await callback.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+
+
+@router.callback_query(F.data.startswith("series_page:"))
+async def series_episodes_page(callback: CallbackQuery):
+    """Qismlar ro'yxatini sahifalash (◀️ 2/4 ▶️)."""
+    try:
+        _, series_id, page, current = callback.data.split(":")
+        series_id, page, current = int(series_id), int(page), int(current)
+    except ValueError:
+        await callback.answer()
+        return
+
+    episodes = await db.get_episodes(series_id)
+    try:
+        await callback.message.edit_reply_markup(
+            reply_markup=series_episodes_keyboard(
+                episodes, series_id=series_id, current=current or None, page=page
+            )
+        )
+    except Exception:
+        pass
+    await callback.answer()
+
+
+@router.callback_query(F.data == "series_noop")
+async def series_noop(callback: CallbackQuery):
+    await callback.answer()
 
 
 # ============================================================
