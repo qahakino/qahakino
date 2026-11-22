@@ -20,6 +20,7 @@ from aiohttp import web
 
 from config import ADMIN_IDS, BOT_TOKEN, REQUIRED_CHANNELS, STORAGE_CHANNEL_ID
 from database import db
+from i18n import LANGS, get_lang, set_lang
 from utils.search import matches
 from utils.subscription import get_unsubscribed_channels
 
@@ -44,6 +45,7 @@ CARD = "SELECT code, name, kind, year, genres, views, poster_file_id FROM (" + I
 # ---------------- migratsiya (faqat qo'shadi, hech narsani o'chirmaydi) ----------------
 async def migrate():
     add = {
+        "users": [("lang", "TEXT")],
         "movies": [("description", "TEXT"), ("release_year", "INTEGER"), ("genres", "TEXT"),
                    ("duration_min", "INTEGER"), ("views", "INTEGER DEFAULT 0"),
                    ("is_active", "INTEGER DEFAULT 1"), ("poster_file_id", "TEXT")],
@@ -147,9 +149,17 @@ async def me(request):
         f"""SELECT i.code, i.name, i.kind, i.year, i.genres, i.views, i.poster_file_id FROM
         (SELECT code, MAX(watched_at) w FROM watch_history WHERE user_id=? GROUP BY code
          ORDER BY w DESC LIMIT 10) h JOIN ({ITEMS}) i ON i.code = h.code""", (uid,))
-    return ok({"bot": (await request.app["bot"].me()).username, "genres": GENRES,
+    return ok({"bot": (await request.app["bot"].me()).username, "genres": GENRES, "lang": await get_lang(uid),
                "is_admin": uid in ADMIN_IDS, "stats": {"favs": favs, "movies": movies, "series": series},
                "recent": [card(r) for r in recent]})
+
+
+async def set_language(request):
+    lang = (await request.json()).get("lang")
+    if lang not in LANGS:
+        return err("bad_lang", 400)
+    await set_lang(request["user"]["id"], lang)
+    return ok({"lang": lang})
 
 
 async def home(request):
@@ -341,7 +351,7 @@ def setup_miniapp(app: web.Application, bot):
     api = web.Application(middlewares=[auth_mw], client_max_size=6 * 1024 * 1024)
     api["bot"] = bot
     api.add_routes([
-        web.get("/me", me), web.get("/home", home), web.get("/catalog", catalog),
+        web.get("/me", me), web.post("/lang", set_language), web.get("/home", home), web.get("/catalog", catalog),
         web.get("/random", random_item), web.get("/item/{code}", item),
         web.get("/favorites", favorites), web.post("/fav", toggle_fav),
         web.post("/watch", watch), web.put("/admin/item/{code}", admin_edit), web.put("/admin/poster/{code}", admin_poster),

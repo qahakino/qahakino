@@ -5,7 +5,7 @@ import tempfile
 from pathlib import Path
 
 from aiogram import Bot, F, Router
-from aiogram.filters import CommandStart, StateFilter
+from aiogram.filters import Command, CommandStart, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, FSInputFile, Message
 
@@ -17,10 +17,8 @@ from config import (
 )
 from database import db
 from keyboards import (
-    BTN_CODE,
-    BTN_NAME,
-    BTN_VOICE,
     clips_keyboard,
+    lang_keyboard,
     main_menu_keyboard,
     part_redo_keyboard,
     search_results_keyboard,
@@ -28,6 +26,7 @@ from keyboards import (
     series_main_keyboard,
     subscription_keyboard,
 )
+from i18n import LANGS, all_variants, get_lang, set_lang, t, ulang
 from states import UserStates
 from utils.media import MediaError, ffmpeg_available, mix_parts, replace_audio
 from utils.parts import fmt_time
@@ -36,15 +35,11 @@ from utils.subscription import get_unsubscribed_channels
 
 router = Router()
 
-SUBSCRIBE_TEXT = (
-    "📢 Botdan foydalanish uchun avval quyidagi kanal(lar)ga obuna bo'ling.\n\n"
-    "Obuna bo'lgach, \"✅ Obuna bo'ldim\" tugmasini bosing."
-)
-
-ASK_CODE_TEXT = (
-    "🎬 Kino yoki serial kodini kiriting, men sizga topib beraman.\n"
-    "Yoki pastdagi tugmalardan foydalaning."
-)
+# Menyu tugmalari uchala tilda taniladi
+BTN_CODE_ALL = all_variants("btn_code")
+BTN_NAME_ALL = all_variants("btn_name")
+BTN_VOICE_ALL = all_variants("btn_voice")
+BTN_LANG_ALL = all_variants("btn_lang")
 
 MAX_SEARCH_RESULTS = 10
 
@@ -59,7 +54,8 @@ _BACKGROUND_TASKS: set[asyncio.Task] = set()
 # ============================================================
 
 async def send_subscription_prompt(message: Message, channels: list[dict]):
-    await message.answer(SUBSCRIBE_TEXT, reply_markup=subscription_keyboard(channels))
+    lang = await ulang(message.from_user.id)
+    await message.answer(t(lang, "subscribe"), reply_markup=subscription_keyboard(channels, lang))
 
 
 async def check_user_subscription(message: Message, bot: Bot) -> bool:
@@ -84,11 +80,28 @@ async def callback_subscribed(callback: CallbackQuery, bot: Bot) -> bool:
         bot, callback.from_user.id, REQUIRED_CHANNELS
     )
     if unsubscribed:
-        await callback.answer(
-            "❌ Avval barcha kanallarga obuna bo'ling.", show_alert=True
-        )
+        lang = await ulang(callback.from_user.id)
+        await callback.answer(t(lang, "need_all_channels"), show_alert=True)
         return False
     return True
+
+
+async def welcome(bot: Bot, user_id: int, chat_id: int, name: str, lang: str):
+    """Obunani tekshiradi, so'ng salomlashib asosiy menyuni chiqaradi."""
+    if REQUIRED_CHANNELS:
+        unsubscribed = await get_unsubscribed_channels(bot, user_id, REQUIRED_CHANNELS)
+        if unsubscribed:
+            await bot.send_message(
+                chat_id, t(lang, "subscribe"),
+                reply_markup=subscription_keyboard(unsubscribed, lang),
+            )
+            return
+
+    await bot.send_message(
+        chat_id,
+        t(lang, "hello", name=html.escape(name)) + "\n\n" + t(lang, "ask_code"),
+        reply_markup=main_menu_keyboard(lang),
+    )
 
 
 def fmt_duration(seconds: int | float | None) -> str:
@@ -107,27 +120,22 @@ async def send_movie(bot: Bot, chat_id: int, movie: tuple):
             message_id=from_message_id,
         )
     except Exception:
-        await bot.send_message(
-            chat_id,
-            "⚠️ Kinoni yuborishda xatolik yuz berdi. Birozdan so'ng qaytadan urinib ko'ring.",
-        )
+        await bot.send_message(chat_id, t(await ulang(chat_id), "movie_send_err"))
 
 
 async def send_series_poster(bot: Bot, chat_id: int, series: tuple):
     series_id, _, name, poster_chat_id, poster_message_id = series
+    lang = await ulang(chat_id)
     try:
         await bot.copy_message(
             chat_id=chat_id,
             from_chat_id=poster_chat_id,
             message_id=poster_message_id,
             caption=f"📺 <b>{html.escape(name)}</b>",
-            reply_markup=series_main_keyboard(series_id),
+            reply_markup=series_main_keyboard(series_id, lang),
         )
     except Exception:
-        await bot.send_message(
-            chat_id,
-            "⚠️ Serial posterini yuborishda xatolik yuz berdi. Birozdan so'ng qayta urinib ko'ring.",
-        )
+        await bot.send_message(chat_id, t(lang, "poster_send_err"))
 
 
 async def send_by_code(bot: Bot, chat_id: int, code: str) -> bool:
@@ -159,86 +167,107 @@ async def cmd_start(message: Message, bot: Bot, state: FSMContext):
         message.from_user.username,
     )
 
-    if not await check_user_subscription(message, bot):
+    lang = await get_lang(message.from_user.id)
+    if lang is None:
+        # Birinchi marta kirdi — avval tilni tanlaydi
+        await message.answer(t("uz", "choose_lang"), reply_markup=lang_keyboard())
         return
 
-    await message.answer(
-        f"👋 Assalomu alaykum, {html.escape(message.from_user.full_name)}!\n\n{ASK_CODE_TEXT}",
-        reply_markup=main_menu_keyboard(),
+    await welcome(
+        bot, message.from_user.id, message.chat.id, message.from_user.full_name, lang
+    )
+
+
+@router.message(Command("lang"))
+async def cmd_lang(message: Message):
+    await message.answer(t("uz", "choose_lang"), reply_markup=lang_keyboard())
+
+
+@router.message(F.text.in_(BTN_LANG_ALL))
+async def menu_language(message: Message, state: FSMContext):
+    await state.clear()
+    await message.answer(t("uz", "choose_lang"), reply_markup=lang_keyboard())
+
+
+@router.callback_query(F.data.startswith("setlang:"))
+async def set_language(callback: CallbackQuery, bot: Bot, state: FSMContext):
+    lang = callback.data.split(":", 1)[1]
+    if lang not in LANGS:
+        await callback.answer()
+        return
+
+    await state.clear()
+    await set_lang(callback.from_user.id, lang)
+    await callback.answer(t(lang, "lang_set"))
+    try:
+        await callback.message.delete()
+    except Exception:
+        pass
+
+    # Menyu tugmalari yangi tilda chiqishi uchun salomlashishni qayta yuboramiz
+    await welcome(
+        bot, callback.from_user.id, callback.message.chat.id,
+        callback.from_user.full_name, lang,
     )
 
 
 @router.callback_query(F.data == "check_subscription")
 async def check_subscription(callback: CallbackQuery, bot: Bot):
+    lang = await ulang(callback.from_user.id)
     unsubscribed = await get_unsubscribed_channels(
         bot, callback.from_user.id, REQUIRED_CHANNELS
     )
     if unsubscribed:
-        await callback.answer(
-            "❌ Siz hali barcha kanallarga obuna bo'lmadingiz!", show_alert=True
-        )
+        await callback.answer(t(lang, "not_all_subscribed"), show_alert=True)
         await callback.message.edit_reply_markup(
-            reply_markup=subscription_keyboard(unsubscribed)
+            reply_markup=subscription_keyboard(unsubscribed, lang)
         )
         return
 
-    await callback.answer("✅ Obuna tasdiqlandi!")
-    await callback.message.edit_text("✅ Rahmat!")
+    await callback.answer(t(lang, "sub_ok"))
+    await callback.message.edit_text(t(lang, "thanks"))
     # Klaviaturani (menyu tugmalarini) chiqarish uchun alohida xabar kerak
-    await callback.message.answer(ASK_CODE_TEXT, reply_markup=main_menu_keyboard())
+    await callback.message.answer(t(lang, "ask_code"), reply_markup=main_menu_keyboard(lang))
 
 
 # ============================================================
 # MENYU TUGMALARI
 # ============================================================
 
-@router.message(F.text == BTN_CODE)
+@router.message(F.text.in_(BTN_CODE_ALL))
 async def menu_search_by_code(message: Message, bot: Bot, state: FSMContext):
     if not await check_user_subscription(message, bot):
         return
 
+    lang = await ulang(message.from_user.id)
     await state.clear()
-    await message.answer(
-        "🔢 Kino yoki serial <b>kodini</b> yuboring:",
-        reply_markup=main_menu_keyboard(),
-    )
+    await message.answer(t(lang, "send_code"), reply_markup=main_menu_keyboard(lang))
 
 
-@router.message(F.text == BTN_NAME)
+@router.message(F.text.in_(BTN_NAME_ALL))
 async def menu_search_by_name(message: Message, bot: Bot, state: FSMContext):
     if not await check_user_subscription(message, bot):
         return
 
+    lang = await ulang(message.from_user.id)
     await state.set_state(UserStates.waiting_name)
-    await message.answer(
-        "🔎 Kino yoki serial <b>nomini</b> yozing.\n"
-        "Nomning bir qismi ham yetarli, masalan: <i>temir</i>",
-        reply_markup=main_menu_keyboard(),
-    )
+    await message.answer(t(lang, "send_name"), reply_markup=main_menu_keyboard(lang))
 
 
-@router.message(F.text == BTN_VOICE)
+@router.message(F.text.in_(BTN_VOICE_ALL))
 async def menu_voice(message: Message, bot: Bot, state: FSMContext):
     if not await check_user_subscription(message, bot):
         return
 
+    lang = await ulang(message.from_user.id)
     await state.clear()
     clips = await db.all_clips()
 
     if not clips:
-        await message.answer(
-            "🎙 Hozircha ovozli parchalar yo'q. Tez orada qo'shiladi!",
-            reply_markup=main_menu_keyboard(),
-        )
+        await message.answer(t(lang, "no_clips"), reply_markup=main_menu_keyboard(lang))
         return
 
-    await message.answer(
-        "🎙 <b>Ovozli kino</b>\n\n"
-        "Kinodan mashhur parchani tanlang. Men sizga videoni va uning matnini "
-        "yuboraman. Matnni o'qib, <b>ovozli xabar</b> yuborsangiz, videoga "
-        "sizning ovozingizni qo'yib beraman.",
-        reply_markup=clips_keyboard(clips),
-    )
+    await message.answer(t(lang, "voice_intro"), reply_markup=clips_keyboard(clips))
 
 
 # ============================================================
@@ -260,8 +289,9 @@ async def handle_name_search(message: Message, bot: Bot):
     if await send_by_code(bot, message.chat.id, query):
         return
 
+    lang = await ulang(message.from_user.id)
     if len(normalize(query)) < 2:
-        await message.answer("❌ Kamida 2 ta harf yozing.")
+        await message.answer(t(lang, "min2"))
         return
 
     movies = [
@@ -278,10 +308,7 @@ async def handle_name_search(message: Message, bot: Bot):
     total = len(movies) + len(series)
 
     if total == 0:
-        await message.answer(
-            "❌ Bunday nomli kino yoki serial topilmadi.\n"
-            "Nomini boshqacha yozib ko'ring yoki kod orqali qidiring."
-        )
+        await message.answer(t(lang, "name_nf"))
         return
 
     # Bitta natija bo'lsa — to'g'ridan-to'g'ri yuboramiz
@@ -299,9 +326,9 @@ async def handle_name_search(message: Message, bot: Bot):
     shown_movies = movies[:MAX_SEARCH_RESULTS]
     shown_series = series[: MAX_SEARCH_RESULTS - len(shown_movies)]
 
-    text = f"🔎 Topildi: <b>{total} ta</b>. Keraklisini tanlang:"
+    text = t(lang, "found_n", n=total)
     if total > MAX_SEARCH_RESULTS:
-        text += f"\n(Dastlabki {MAX_SEARCH_RESULTS} tasi ko'rsatildi, aniqroq yozsangiz yaxshi.)"
+        text += t(lang, "first_n", m=MAX_SEARCH_RESULTS)
 
     await message.answer(
         text,
@@ -317,10 +344,10 @@ async def open_movie(callback: CallbackQuery, bot: Bot):
     code = callback.data.split(":", 1)[1]
     movie = await db.get_movie(code)
     if not movie:
-        await callback.answer("❌ Kino topilmadi.", show_alert=True)
+        await callback.answer(t(await ulang(callback.from_user.id), "movie_nf"), show_alert=True)
         return
 
-    await callback.answer("🎬 Yuborilmoqda...")
+    await callback.answer(t(await ulang(callback.from_user.id), "sending"))
     await send_movie(bot, callback.message.chat.id, movie)
 
 
@@ -332,12 +359,12 @@ async def open_series(callback: CallbackQuery, bot: Bot):
     try:
         series_id = int(callback.data.split(":", 1)[1])
     except ValueError:
-        await callback.answer("❌ Noto'g'ri serial.", show_alert=True)
+        await callback.answer(t(await ulang(callback.from_user.id), "bad_series"), show_alert=True)
         return
 
     series = await db.get_series(series_id)
     if not series:
-        await callback.answer("❌ Serial topilmadi.", show_alert=True)
+        await callback.answer(t(await ulang(callback.from_user.id), "series_nf"), show_alert=True)
         return
 
     await callback.answer()
@@ -355,17 +382,17 @@ async def send_part_prompt(bot: Bot, chat_id: int, clip: dict, idx: int):
     part = parts[idx]
     window = part["end"] - part["start"]
 
-    text = (
-        f"🎙 <b>{idx + 1}/{len(parts)}-qism</b>  "
-        f"⏱ {fmt_time(part['start'])}–{fmt_time(part['end'])} "
-        f"(~{int(round(window))} soniya)\n\n"
-        f"{html.escape(part['text'])}\n\n"
-        "Shu qismni o'qib, <b>ovozli xabar</b> yuboring."
+    lang = await ulang(chat_id)
+    text = t(
+        lang, "part_prompt",
+        i=idx + 1, n=len(parts),
+        a=fmt_time(part["start"]), b=fmt_time(part["end"]),
+        sec=int(round(window)), text=html.escape(part["text"]),
     )
     await bot.send_message(
         chat_id,
         text,
-        reply_markup=part_redo_keyboard(idx) if idx > 0 else None,
+        reply_markup=part_redo_keyboard(idx, lang) if idx > 0 else None,
     )
 
 
@@ -374,11 +401,7 @@ async def start_parts_flow(bot: Bot, chat_id: int, state: FSMContext, clip: dict
     await state.set_data({"clip_id": clip["id"], "idx": 0, "voices": []})
 
     await bot.send_message(
-        chat_id,
-        f"🧩 Bu parcha <b>{len(clip['parts'])} qismdan</b> iborat. "
-        "Har bir qism uchun alohida ovozli xabar yozasiz, oxirida men hammasini "
-        "videoga joylab beraman.\n"
-        "Bekor qilish uchun /start bosing.",
+        chat_id, t(await ulang(chat_id), "parts_intro", n=len(clip["parts"]))
     )
     await send_part_prompt(bot, chat_id, clip, 0)
 
@@ -390,15 +413,15 @@ async def receive_part(message: Message, bot: Bot, state: FSMContext):
         await _receive_part(message, bot, state)
     except Exception:
         logging.exception("receive_part ichida xatolik")
-        await message.answer(
-            "⚠️ Ovozni qayta ishlashda xatolik yuz berdi. "
-            "Qaytadan urinib ko'ring: «🎙 Ovozli kino» tugmasi."
-        )
+        lang = await ulang(message.from_user.id)
+        await message.answer(t(lang, "voice_proc_err", btn=t(lang, "btn_voice")))
 
 
 async def _receive_part(message: Message, bot: Bot, state: FSMContext):
     if not await check_user_subscription(message, bot):
         return
+
+    lang = await ulang(message.from_user.id)
 
     data = await state.get_data()
     clip = await db.get_clip_full(data.get("clip_id") or 0)
@@ -408,17 +431,14 @@ async def _receive_part(message: Message, bot: Bot, state: FSMContext):
     if not clip or not clip["parts"] or idx >= len(clip["parts"]):
         await state.clear()
         await message.answer(
-            "❌ Parcha topilmadi. «🎙 Ovozli kino» tugmasidan qaytadan tanlang.",
-            reply_markup=main_menu_keyboard(),
+            t(lang, "clip_nf_retry", btn=t(lang, "btn_voice")),
+            reply_markup=main_menu_keyboard(lang),
         )
         return
 
     if not ffmpeg_available():
         logging.error("ffmpeg/ffprobe serverda o'rnatilmagan!")
-        await message.answer(
-            "⚠️ Hozircha video yig'ish ishlamayapti (server sozlanmoqda). "
-            "Keyinroq urinib ko'ring."
-        )
+        await message.answer(t(lang, "ffmpeg_off"))
         return
 
     media = message.voice or message.audio
@@ -426,18 +446,16 @@ async def _receive_part(message: Message, bot: Bot, state: FSMContext):
     window = parts[idx]["end"] - parts[idx]["start"]
 
     if media.file_size and media.file_size > MAX_DOWNLOAD_BYTES:
-        await message.answer("❌ Ovoz fayli juda katta. Qisqaroq ovoz yuboring.")
+        await message.answer(t(lang, "voice_too_big"))
         return
 
     if media.duration is not None and media.duration < 1:
-        await message.answer("❌ Ovoz juda qisqa. Matnni o'qib, qayta yuboring.")
+        await message.answer(t(lang, "voice_short"))
         return
 
     if media.duration and media.duration > window + PART_EXTRA_SECONDS:
         await message.answer(
-            f"❌ Ovozingiz {media.duration} soniya, bu qism uchun esa "
-            f"~{int(round(window))} soniyadan oshmasligi kerak.\n"
-            "Biroz tezroq o'qib, qayta yuboring."
+            t(lang, "part_too_long", d=media.duration, w=int(round(window)))
         )
         return
 
@@ -451,10 +469,7 @@ async def _receive_part(message: Message, bot: Bot, state: FSMContext):
 
     # Hamma qism yig'ildi
     await state.clear()
-    status = await message.answer(
-        "✅ Barcha qismlar qabul qilindi.\n"
-        "⏳ Videongiz tayyorlanmoqda, 1-2 daqiqa ketishi mumkin..."
-    )
+    status = await message.answer(t(lang, "all_parts_ok"))
 
     task = asyncio.create_task(
         build_parts_video(
@@ -471,6 +486,7 @@ async def _receive_part(message: Message, bot: Bot, state: FSMContext):
 
 @router.callback_query(StateFilter(UserStates.waiting_part), F.data.startswith("part_redo:"))
 async def part_redo(callback: CallbackQuery, bot: Bot, state: FSMContext):
+    lang = await ulang(callback.from_user.id)
     data = await state.get_data()
     idx = int(data.get("idx", 0))
     voices = list(data.get("voices", []))
@@ -481,23 +497,23 @@ async def part_redo(callback: CallbackQuery, bot: Bot, state: FSMContext):
         pressed_idx = -1
 
     if pressed_idx != idx:
-        await callback.answer("Bu tugma eskirgan.", show_alert=True)
+        await callback.answer(t(lang, "stale_btn"), show_alert=True)
         return
 
     if idx <= 0 or not voices:
-        await callback.answer("Qayta yoziladigan oldingi qism yo'q.", show_alert=True)
+        await callback.answer(t(lang, "no_prev_part"), show_alert=True)
         return
 
     clip = await db.get_clip_full(data.get("clip_id") or 0)
     if not clip:
-        await callback.answer("❌ Parcha topilmadi.", show_alert=True)
+        await callback.answer(t(lang, "clip_nf"), show_alert=True)
         return
 
     idx -= 1
     voices.pop()
     await state.update_data(idx=idx, voices=voices)
 
-    await callback.answer("↩️ Qayta yozing")
+    await callback.answer(t(lang, "rewrite"))
     try:
         await callback.message.edit_reply_markup(reply_markup=None)
     except Exception:
@@ -512,6 +528,7 @@ async def build_parts_video(
     clip: dict,
     status: Message,
 ):
+    lang = await ulang(chat_id)
     try:
         async with _JOB_SEM:
             with tempfile.TemporaryDirectory(prefix="voiceparts_") as tmp:
@@ -519,7 +536,7 @@ async def build_parts_video(
                 bg_path = tmp_dir / "bg.mp4"
                 out_path = tmp_dir / "result.mp4"
 
-                await _set_status(status, "⬇️ 1/3 — Material yuklanmoqda...")
+                await _set_status(status, t(lang, "st_1"))
                 await bot.download(clip["bg_file_id"], destination=bg_path, timeout=120)
 
                 voices: list[tuple[Path, float]] = []
@@ -528,16 +545,16 @@ async def build_parts_video(
                     await bot.download(file_id, destination=voice_path, timeout=120)
                     voices.append((voice_path, part["start"]))
 
-                await _set_status(status, "🎬 2/3 — Ovozlar videoga joylanmoqda...")
+                await _set_status(status, t(lang, "st_2_parts"))
                 await mix_parts(bg_path, voices, out_path)
 
-                await _set_status(status, "📤 3/3 — Tayyor video yuborilmoqda...")
+                await _set_status(status, t(lang, "st_3"))
                 await bot.send_video(
                     chat_id=chat_id,
                     video=FSInputFile(out_path, filename="ovozli_kino.mp4"),
                     caption=(
                         f"🎬 <b>{html.escape(clip['title'])}</b>\n"
-                        "🎙 Sizning ovozingiz bilan!"
+                        + t(lang, "cap_voice")
                     ),
                     supports_streaming=True,
                 )
@@ -557,11 +574,7 @@ async def build_parts_video(
 
 @router.message(StateFilter(UserStates.waiting_part))
 async def waiting_part_wrong_type(message: Message):
-    await message.answer(
-        "🎙 Iltimos, <b>ovozli xabar</b> (voice) yuboring — "
-        "mikrofon tugmasini bosib turib matnni o'qing.\n"
-        "Bekor qilish uchun /start bosing."
-    )
+    await message.answer(t(await ulang(message.from_user.id), "wrong_type"))
 
 
 @router.callback_query(F.data.startswith("clip:"))
@@ -569,15 +582,17 @@ async def pick_clip(callback: CallbackQuery, bot: Bot, state: FSMContext):
     if not await callback_subscribed(callback, bot):
         return
 
+    lang = await ulang(callback.from_user.id)
+
     try:
         clip_id = int(callback.data.split(":", 1)[1])
     except ValueError:
-        await callback.answer("❌ Noto'g'ri parcha.", show_alert=True)
+        await callback.answer(t(lang, "bad_clip"), show_alert=True)
         return
 
     clip = await db.get_clip(clip_id)
     if not clip:
-        await callback.answer("❌ Parcha topilmadi.", show_alert=True)
+        await callback.answer(t(lang, "clip_nf"), show_alert=True)
         return
 
     _, title, script, video_file_id, duration = clip
@@ -594,10 +609,7 @@ async def pick_clip(callback: CallbackQuery, bot: Bot, state: FSMContext):
         )
     except Exception:
         logging.exception("Parcha videosini yuborib bo'lmadi (clip_id=%s)", clip_id)
-        await bot.send_message(
-            chat_id,
-            "⚠️ Videoni yuborishda xatolik yuz berdi. Birozdan so'ng qayta urinib ko'ring.",
-        )
+        await bot.send_message(chat_id, t(lang, "video_send_err"))
         return
 
     # Yangi usul: parcha qismlarga bo'lingan va orqa fonli video bor
@@ -610,13 +622,10 @@ async def pick_clip(callback: CallbackQuery, bot: Bot, state: FSMContext):
     await state.set_state(UserStates.waiting_voice)
     await state.update_data(clip_id=clip_id)
 
-    length_hint = f" Videoning davomiyligi: <b>{fmt_duration(duration)}</b>." if duration else ""
+    length_hint = t(lang, "length_hint", d=fmt_duration(duration)) if duration else ""
     await bot.send_message(
         chat_id,
-        f"📜 <b>Matn:</b>\n\n{html.escape(script)}\n\n"
-        "🎙 Endi shu matnni o'qib, <b>ovozli xabar</b> (voice) yuboring."
-        f"{length_hint}\n"
-        "Bekor qilish uchun /start bosing.",
+        t(lang, "script_prompt", script=html.escape(script), hint=length_hint),
     )
 
 
@@ -627,15 +636,15 @@ async def receive_voice(message: Message, bot: Bot, state: FSMContext):
         await _receive_voice(message, bot, state)
     except Exception:
         logging.exception("receive_voice ichida xatolik")
-        await message.answer(
-            "⚠️ Ovozni qayta ishlashda xatolik yuz berdi. "
-            "Qaytadan urinib ko'ring: «🎙 Ovozli kino» tugmasi."
-        )
+        lang = await ulang(message.from_user.id)
+        await message.answer(t(lang, "voice_proc_err", btn=t(lang, "btn_voice")))
 
 
 async def _receive_voice(message: Message, bot: Bot, state: FSMContext):
     if not await check_user_subscription(message, bot):
         return
+
+    lang = await ulang(message.from_user.id)
 
     data = await state.get_data()
     clip_id = data.get("clip_id")
@@ -644,28 +653,25 @@ async def _receive_voice(message: Message, bot: Bot, state: FSMContext):
     if not clip:
         await state.clear()
         await message.answer(
-            "❌ Parcha topilmadi. «🎙 Ovozli kino» tugmasidan qaytadan tanlang.",
-            reply_markup=main_menu_keyboard(),
+            t(lang, "clip_nf_retry", btn=t(lang, "btn_voice")),
+            reply_markup=main_menu_keyboard(lang),
         )
         return
 
     if not ffmpeg_available():
         logging.error("ffmpeg/ffprobe serverda o'rnatilmagan!")
-        await message.answer(
-            "⚠️ Hozircha video yig'ish ishlamayapti (server sozlanmoqda). "
-            "Keyinroq urinib ko'ring."
-        )
+        await message.answer(t(lang, "ffmpeg_off"))
         return
 
     media = message.voice or message.audio
     clip_duration = clip[4]
 
     if media.file_size and media.file_size > MAX_DOWNLOAD_BYTES:
-        await message.answer("❌ Ovoz fayli juda katta. Qisqaroq ovoz yuboring.")
+        await message.answer(t(lang, "voice_too_big"))
         return
 
     if media.duration is not None and media.duration < 2:
-        await message.answer("❌ Ovoz juda qisqa. Matnni to'liq o'qib, qayta yuboring.")
+        await message.answer(t(lang, "voice_short_full"))
         return
 
     if (
@@ -674,17 +680,12 @@ async def _receive_voice(message: Message, bot: Bot, state: FSMContext):
         and media.duration > clip_duration + VOICE_EXTRA_SECONDS
     ):
         await message.answer(
-            f"❌ Ovozingiz ({fmt_duration(media.duration)}) videodan "
-            f"({fmt_duration(clip_duration)}) uzun.\n"
-            "Biroz tezroq o'qib, qayta yuboring."
+            t(lang, "voice_longer", a=fmt_duration(media.duration), b=fmt_duration(clip_duration))
         )
         return
 
     await state.clear()
-    status = await message.answer(
-        "✅ Ovozingiz qabul qilindi.\n⏳ Videongiz tayyorlanmoqda, "
-        "1 daqiqagacha vaqt ketishi mumkin..."
-    )
+    status = await message.answer(t(lang, "voice_ok"))
 
     # Handler tezda qaytadi, og'ir ish fonda bajariladi (webhook kutib qolmasligi uchun)
     task = asyncio.create_task(
@@ -715,6 +716,7 @@ async def build_and_send_video(
     status: Message,
 ):
     _, title, _script, video_file_id, _duration = clip
+    lang = await ulang(chat_id)
 
     try:
         async with _JOB_SEM:
@@ -724,18 +726,18 @@ async def build_and_send_video(
                 voice_path = tmp_dir / "voice.ogg"
                 out_path = tmp_dir / "result.mp4"
 
-                await _set_status(status, "⬇️ 1/3 — Material yuklanmoqda...")
+                await _set_status(status, t(lang, "st_1"))
                 await bot.download(video_file_id, destination=video_path, timeout=120)
                 await bot.download(voice_file_id, destination=voice_path, timeout=120)
 
-                await _set_status(status, "🎬 2/3 — Ovoz videoga qo'yilmoqda...")
+                await _set_status(status, t(lang, "st_2_one"))
                 await replace_audio(video_path, voice_path, out_path)
 
-                await _set_status(status, "📤 3/3 — Tayyor video yuborilmoqda...")
+                await _set_status(status, t(lang, "st_3"))
                 await bot.send_video(
                     chat_id=chat_id,
                     video=FSInputFile(out_path, filename="ovozli_kino.mp4"),
-                    caption=f"🎬 <b>{html.escape(title)}</b>\n🎙 Sizning ovozingiz bilan!",
+                    caption=f"🎬 <b>{html.escape(title)}</b>\n" + t(lang, "cap_voice"),
                     supports_streaming=True,
                 )
 
@@ -754,7 +756,7 @@ async def build_and_send_video(
 
 
 async def _fail_status(status: Message):
-    text = "⚠️ Video yaratishda xatolik yuz berdi. Birozdan so'ng qayta urinib ko'ring."
+    text = t(await ulang(status.chat.id), "video_fail")
     try:
         await status.edit_text(text)
     except Exception:
@@ -763,11 +765,7 @@ async def _fail_status(status: Message):
 
 @router.message(StateFilter(UserStates.waiting_voice))
 async def waiting_voice_wrong_type(message: Message):
-    await message.answer(
-        "🎙 Iltimos, <b>ovozli xabar</b> (voice) yuboring — "
-        "mikrofon tugmasini bosib turib matnni o'qing.\n"
-        "Bekor qilish uchun /start bosing."
-    )
+    await message.answer(t(await ulang(message.from_user.id), "wrong_type"))
 
 
 # ============================================================
@@ -784,10 +782,10 @@ async def handle_code(message: Message, bot: Bot):
     if await send_by_code(bot, message.chat.id, code):
         return
 
+    lang = await ulang(message.from_user.id)
     await message.answer(
-        "❌ Bunday kodli kino yoki serial topilmadi.\n"
-        "Kodni tekshirib, qaytadan yuboring yoki «🔎 Nomi orqali qidirish» tugmasini bosing.",
-        reply_markup=main_menu_keyboard(),
+        t(lang, "code_nf", btn=t(lang, "btn_name")),
+        reply_markup=main_menu_keyboard(lang),
     )
 
 
@@ -800,25 +798,26 @@ async def show_series_episodes(callback: CallbackQuery, bot: Bot):
     if not await callback_subscribed(callback, bot):
         return
 
+    lang = await ulang(callback.from_user.id)
     series_id = int(callback.data.split(":", 1)[1])
     series = await db.get_series(series_id)
     if not series:
-        await callback.answer("❌ Serial topilmadi.", show_alert=True)
+        await callback.answer(t(lang, "series_nf"), show_alert=True)
         return
 
     episodes = await db.get_episodes(series_id)
     if not episodes:
-        await callback.answer("❌ Hozircha qismlar yo'q.", show_alert=True)
+        await callback.answer(t(lang, "ep_none"), show_alert=True)
         return
 
     await callback.answer()
-    keyboard = series_episodes_keyboard(episodes, series_id=series_id)
+    keyboard = series_episodes_keyboard(episodes, series_id=series_id, lang=lang)
     try:
         # Poster xabarining o'zida qismlar tugmalari chiqadi (yangi xabar ochilmaydi)
         await callback.message.edit_reply_markup(reply_markup=keyboard)
     except Exception:
         await callback.message.answer(
-            f"📺 <b>{html.escape(series[2])}</b>\n\nQismni tanlang:",
+            t(lang, "choose_ep", name=html.escape(series[2])),
             reply_markup=keyboard,
         )
 
@@ -828,16 +827,17 @@ async def send_series_episode(callback: CallbackQuery, bot: Bot):
     if not await callback_subscribed(callback, bot):
         return
 
+    lang = await ulang(callback.from_user.id)
     episode_id = int(callback.data.split(":", 1)[1])
     episode = await db.get_episode(episode_id)
     if not episode:
-        await callback.answer("❌ Bu qism topilmadi.", show_alert=True)
+        await callback.answer(t(lang, "ep_nf"), show_alert=True)
         return
 
     _, series_id, episode_number, chat_id, message_id = episode
     episodes = await db.get_episodes(series_id)
 
-    await callback.answer(f"▶️ {episode_number}-qism yuborilmoqda...")
+    await callback.answer(t(lang, "ep_sending", n=episode_number))
     try:
         # Tugmalar yuborilgan qismning O'ZIGA ulanadi: keyingi qismni
         # darrov shu videoning ostidan tanlab ketish mumkin.
@@ -846,13 +846,11 @@ async def send_series_episode(callback: CallbackQuery, bot: Bot):
             from_chat_id=chat_id,
             message_id=message_id,
             reply_markup=series_episodes_keyboard(
-                episodes, series_id=series_id, current=episode_number
+                episodes, series_id=series_id, current=episode_number, lang=lang
             ),
         )
     except Exception:
-        await callback.message.answer(
-            "⚠️ Qismni yuborishda xatolik yuz berdi. Birozdan so'ng qaytadan urinib ko'ring."
-        )
+        await callback.message.answer(t(lang, "ep_send_err"))
         return
 
     # Yuqoridagi (eski) xabardagi tugmalar yo'qoladi
@@ -873,10 +871,11 @@ async def series_episodes_page(callback: CallbackQuery):
         return
 
     episodes = await db.get_episodes(series_id)
+    lang = await ulang(callback.from_user.id)
     try:
         await callback.message.edit_reply_markup(
             reply_markup=series_episodes_keyboard(
-                episodes, series_id=series_id, current=current or None, page=page
+                episodes, series_id=series_id, current=current or None, page=page, lang=lang
             )
         )
     except Exception:
@@ -895,8 +894,8 @@ async def series_noop(callback: CallbackQuery):
 
 @router.message(F.voice | F.audio)
 async def voice_without_state(message: Message):
+    lang = await ulang(message.from_user.id)
     await message.answer(
-        "🎙 Avval «🎙 Ovozli kino» tugmasidan parcha tanlang, "
-        "keyin matnni o'qib ovozli xabar yuboring.",
-        reply_markup=main_menu_keyboard(),
+        t(lang, "voice_no_state", btn=t(lang, "btn_voice")),
+        reply_markup=main_menu_keyboard(lang),
     )

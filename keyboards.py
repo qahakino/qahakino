@@ -6,25 +6,31 @@ from aiogram.types import (
 )
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
+from i18n import LANG_NAMES, LANGS, t
+
 
 # ============================================================
 # ASOSIY MENYU (klaviatura o'rnida chiqadigan tugmalar)
 # ============================================================
 
-BTN_CODE = "🔢 Kod orqali qidirish"
-BTN_NAME = "🔎 Nomi orqali qidirish"
-BTN_VOICE = "🎙 Ovozli kino"
-
-
-def main_menu_keyboard() -> ReplyKeyboardMarkup:
+def main_menu_keyboard(lang: str = "uz") -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text=BTN_CODE), KeyboardButton(text=BTN_NAME)],
-            [KeyboardButton(text=BTN_VOICE)],
+            [KeyboardButton(text=t(lang, "btn_code")), KeyboardButton(text=t(lang, "btn_name"))],
+            [KeyboardButton(text=t(lang, "btn_voice")), KeyboardButton(text=t(lang, "btn_lang"))],
         ],
         resize_keyboard=True,
-        input_field_placeholder="Kod yoki kino nomini yozing...",
+        input_field_placeholder=t(lang, "input_ph"),
     )
+
+
+def lang_keyboard() -> InlineKeyboardMarkup:
+    """Til tanlash tugmalari (🇺🇿 / 🇷🇺 / 🇬🇧)."""
+    builder = InlineKeyboardBuilder()
+    for code in LANGS:
+        builder.button(text=LANG_NAMES[code], callback_data=f"setlang:{code}")
+    builder.adjust(1)
+    return builder.as_markup()
 
 
 def _short(text: str, limit: int = 55) -> str:
@@ -63,10 +69,10 @@ def clips_keyboard(clips: list[tuple]) -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
-def part_redo_keyboard(idx: int) -> InlineKeyboardMarkup:
+def part_redo_keyboard(idx: int, lang: str = "uz") -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.button(
-        text="↩️ Oldingi qismni qayta yozish",
+        text=t(lang, "part_redo_btn"),
         callback_data=f"part_redo:{idx}",
     )
     return builder.as_markup()
@@ -88,12 +94,12 @@ def admin_clips_keyboard(clips: list[tuple]) -> InlineKeyboardMarkup:
 # OBUNA / SERIAL (avvalgidek)
 # ============================================================
 
-def subscription_keyboard(channels: list[dict]) -> InlineKeyboardMarkup:
+def subscription_keyboard(channels: list[dict], lang: str = "uz") -> InlineKeyboardMarkup:
     """Obuna bo'linmagan kanallar ro'yxati + tekshirish tugmasi."""
     builder = InlineKeyboardBuilder()
     for i, ch in enumerate(channels, start=1):
-        builder.button(text=f"📢 {i}-kanalga o'tish", url=ch["link"])
-    builder.button(text="✅ Obuna bo'ldim", callback_data="check_subscription")
+        builder.button(text=t(lang, "sub_btn_channel", i=i), url=ch["link"])
+    builder.button(text=t(lang, "sub_btn_done"), callback_data="check_subscription")
     builder.adjust(1)
     return builder.as_markup()
 
@@ -108,9 +114,9 @@ def serial_admin_keyboard(series: list[tuple]) -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
-def series_main_keyboard(series_id: int) -> InlineKeyboardMarkup:
+def series_main_keyboard(series_id: int, lang: str = "uz") -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
-    builder.button(text="📺 Qismlarni ko'rish", callback_data=f"series_episodes:{series_id}")
+    builder.button(text=t(lang, "series_btn_eps"), callback_data=f"series_episodes:{series_id}")
     return builder.as_markup()
 
 
@@ -122,6 +128,7 @@ def series_episodes_keyboard(
     series_id: int | None = None,
     current: int | None = None,
     page: int | None = None,
+    lang: str = "uz",
 ) -> InlineKeyboardMarkup:
     """Qismlar tugmalari: qatorda 5 tadan, 30 tadan sahifalanadi.
 
@@ -163,11 +170,11 @@ def series_episodes_keyboard(
             if pos > 0:
                 prev = episodes[pos - 1]
                 step.append(InlineKeyboardButton(
-                    text=f"⏮ {prev[1]}-qism", callback_data=f"series_episode:{prev[0]}"))
+                    text=t(lang, "ep_prev", n=prev[1]), callback_data=f"series_episode:{prev[0]}"))
             if pos < len(episodes) - 1:
                 nxt = episodes[pos + 1]
                 step.append(InlineKeyboardButton(
-                    text=f"{nxt[1]}-qism ⏭", callback_data=f"series_episode:{nxt[0]}"))
+                    text=t(lang, "ep_next", n=nxt[1]), callback_data=f"series_episode:{nxt[0]}"))
             if step:
                 rows.append(step)
 

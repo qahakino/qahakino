@@ -129,15 +129,34 @@ async def main():
                 command="start",
                 description="Botni ishga tushirish"
             ),
+            BotCommand(
+                command="lang",
+                description="Tilni o'zgartirish"
+            ),
         ],
         scope=BotCommandScopeDefault(),
     )
+    # Til bo'yicha buyruqlar tavsifi (Telegram foydalanuvchi tiliga qarab ko'rsatadi)
+    for code, start_text, lang_text in (
+        ("ru", "Запустить бота", "Сменить язык"),
+        ("en", "Start the bot", "Change language"),
+    ):
+        await bot.set_my_commands(
+            [BotCommand(command="start", description=start_text),
+             BotCommand(command="lang", description=lang_text)],
+            scope=BotCommandScopeDefault(),
+            language_code=code,
+        )
     for admin_id in ADMIN_IDS:
         await bot.set_my_commands(
             [
                 BotCommand(
                     command="start",
                     description="Botni ishga tushirish"
+                ),
+                BotCommand(
+                    command="lang",
+                    description="Tilni o‘zgartirish"
                 ),
                 BotCommand(
                     command="admin",
