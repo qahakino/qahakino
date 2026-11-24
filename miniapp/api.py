@@ -9,11 +9,11 @@ import json
 import logging
 import os
 import random
+import re
 import time
 from pathlib import Path
 from urllib.parse import parse_qsl
 
-import aiosqlite
 from aiogram.exceptions import TelegramForbiddenError
 from aiogram.types import BufferedInputFile
 from aiohttp import web
@@ -39,7 +39,10 @@ SELECT code, name, 'series', release_year, genres, views,
        created_at, description, NULL, poster_file_id
 FROM series WHERE is_active = 1
 """
-CARD = "SELECT code, name, kind, year, genres, views, poster_file_id FROM (" + ITEMS + ")"
+# Ma'lumoti yetishmaydigan: izoh, janr yoki poster yo'q
+MISSING = ("(IFNULL(description, '') = '' OR IFNULL(genres, '') = '' "
+           "OR IFNULL(poster_file_id, '') = '')")
+CARD = "SELECT code, name, kind, year, genres, views, poster_file_id, description FROM (" + ITEMS + ")"
 
 
 # ---------------- migratsiya (faqat qo'shadi, hech narsani o'chirmaydi) ----------------
@@ -52,7 +55,7 @@ async def migrate():
         "series": [("description", "TEXT"), ("release_year", "INTEGER"), ("genres", "TEXT"),
                    ("views", "INTEGER DEFAULT 0"), ("is_active", "INTEGER DEFAULT 1"), ("poster_file_id", "TEXT")],
     }
-    async with aiosqlite.connect(db.path) as c:
+    async with db.conn() as c:
         for table, cols in add.items():
             cur = await c.execute(f"PRAGMA table_info({table})")
             have = {r[1] for r in await cur.fetchall()}
@@ -72,16 +75,15 @@ async def migrate():
 
 
 async def fetch(sql, args=()):
-    async with aiosqlite.connect(db.path) as c:
-        c.row_factory = aiosqlite.Row
-        await c.execute("PRAGMA busy_timeout=5000")
+    # Botning umumiy ulanishidan foydalanamiz (row_factory'ga tegmaymiz)
+    async with db.conn() as c:
         cur = await c.execute(sql, args)
-        return [dict(r) for r in await cur.fetchall()]
+        cols = [d[0] for d in cur.description]
+        return [dict(zip(cols, row)) for row in await cur.fetchall()]
 
 
 async def execute(sql, args=()):
-    async with aiosqlite.connect(db.path) as c:
-        await c.execute("PRAGMA busy_timeout=5000")
+    async with db.conn() as c:
         await c.execute(sql, args)
         await c.commit()
 
@@ -96,6 +98,102 @@ async def set_poster(code: str, file_id: str):
     """Poster Telegram file_id sifatida saqlanadi (kino yoki serial kodi bo'yicha)."""
     await execute("UPDATE movies SET poster_file_id=? WHERE code=?", (file_id, code))
     await execute("UPDATE series SET poster_file_id=? WHERE code=?", (file_id, code))
+
+
+_ALIASES = {
+    "боевик": "Jangari", "action": "Jangari", "комедия": "Komediya", "comedy": "Komediya",
+    "драма": "Drama", "фантастика": "Fantastika", "sci-fi": "Fantastika", "scifi": "Fantastika",
+    "триллер": "Triller", "thriller": "Triller", "приключения": "Sarguzasht", "adventure": "Sarguzasht",
+    "ужасы": "Qo'rqinchli", "horror": "Qo'rqinchli", "мелодрама": "Romantika", "romance": "Romantika",
+    "мультфильм": "Multfilm", "animation": "Multfilm", "другое": "Boshqa", "other": "Boshqa",
+}
+
+
+def _gkey(text: str) -> str:
+    return re.sub(r"['‘’`ʻʼ´]", "", text.strip().lower())
+
+
+_GENRE_MAP = {_gkey(g): g for g in GENRES} | {_gkey(k): v for k, v in _ALIASES.items()}
+
+
+def parse_info(text: str) -> dict:
+    """Admin yozgan matnni tahlil qiladi.
+
+    Birinchi qatorda «|» bo'lib, unda yil / daqiqa / tanish janr uchrasa — bu meta-qator
+    (yil | janrlar | daqiqa, tartibsiz ham bo'ladi):
+        2024 | Komediya, Drama | 120
+    Qolgan qatorlar — izoh. Aks holda butun matn izoh hisoblanadi.
+    """
+    text = (text or "").strip()
+    lines = text.splitlines()
+    info = {"description": None, "year": None, "genres": None, "duration": None, "unknown": []}
+
+    meta = {"year": None, "duration": None, "genres": None, "unknown": []}
+    recognized = 0
+    if lines and "|" in lines[0]:
+        for part in (p.strip() for p in lines[0].split("|")):
+            if not part:
+                continue
+            if re.fullmatch(r"(19|20)\d\d", part):
+                meta["year"] = int(part); recognized += 1
+            elif re.fullmatch(r"\d{1,3}", part):
+                meta["duration"] = int(part); recognized += 1
+            else:
+                names = []
+                for g in re.split(r"[,;]", part):
+                    if not g.strip():
+                        continue
+                    name = _GENRE_MAP.get(_gkey(g))
+                    if name:
+                        recognized += 1
+                        if name not in names:
+                            names.append(name)
+                    else:
+                        meta["unknown"].append(g.strip())
+                if names:
+                    meta["genres"] = names
+
+    if recognized:
+        info.update(meta)
+        body = "\n".join(lines[1:]).strip()
+    else:
+        body = text
+    if body:
+        info["description"] = body[:1000]
+    return info
+
+
+async def set_info(code: str, *, description=None, year=None, genres=None, duration=None):
+    """Faqat berilgan maydonlarni yangilaydi, qolganlariga tegmaydi."""
+    fields = {}
+    if description is not None:
+        fields["description"] = description[:1000] or None
+    if year is not None:
+        fields["release_year"] = year
+    if genres is not None:
+        fields["genres"] = ",".join(genres)
+    for table in ("movies", "series"):
+        f = dict(fields)
+        if table == "movies" and duration is not None:
+            f["duration_min"] = duration
+        if f:
+            sets = ", ".join(f"{k}=?" for k in f)  # ustun nomlari yuqorida qat'iy belgilangan
+            await execute(f"UPDATE {table} SET {sets} WHERE code=?", (*f.values(), code))
+
+
+async def get_info(code: str):
+    rows = await fetch(
+        f"SELECT code, name, kind, year, genres, description, duration FROM ({ITEMS}) WHERE code=?", (code,))
+    return rows[0] if rows else None
+
+
+async def next_missing_info(exclude=()):
+    """Izohi yoki janri yo'q keyingi kino/serial kodi (bot /info navbati uchun)."""
+    marks = ",".join("?" * len(exclude))
+    sql = (f"SELECT code FROM ({ITEMS}) WHERE (IFNULL(description,'')='' OR IFNULL(genres,'')='')"
+           + (f" AND code NOT IN ({marks})" if exclude else "") + " ORDER BY created DESC LIMIT 1")
+    rows = await fetch(sql, tuple(exclude))
+    return rows[0]["code"] if rows else None
 
 
 def ok(data, status=200):
@@ -131,7 +229,10 @@ async def auth_mw(request, handler):
     if not user:
         return err("unauthorized", 401)
     request["user"] = user
-    return await handler(request)
+    response = await handler(request)
+    if isinstance(response, web.Response):
+        response.enable_compression()      # JSON javoblar gzip bilan yuboriladi
+    return response
 
 
 # ---------------- endpointlar ----------------
@@ -149,8 +250,10 @@ async def me(request):
         f"""SELECT i.code, i.name, i.kind, i.year, i.genres, i.views, i.poster_file_id FROM
         (SELECT code, MAX(watched_at) w FROM watch_history WHERE user_id=? GROUP BY code
          ORDER BY w DESC LIMIT 10) h JOIN ({ITEMS}) i ON i.code = h.code""", (uid,))
+    is_admin = uid in ADMIN_IDS
+    missing = (await fetch(f"SELECT COUNT(*) n FROM ({ITEMS}) WHERE {MISSING}"))[0]["n"] if is_admin else 0
     return ok({"bot": (await request.app["bot"].me()).username, "genres": GENRES, "lang": await get_lang(uid),
-               "is_admin": uid in ADMIN_IDS, "stats": {"favs": favs, "movies": movies, "series": series},
+               "is_admin": is_admin, "missing": missing, "stats": {"favs": favs, "movies": movies, "series": series},
                "recent": [card(r) for r in recent]})
 
 
@@ -172,6 +275,7 @@ async def home(request):
 
 async def catalog(request):
     q = request.query
+    uid = request["user"]["id"]
     where, args = [], []
     if q.get("type") in ("movie", "series"):
         where.append("kind=?"); args.append(q["type"])
@@ -179,19 +283,28 @@ async def catalog(request):
         where.append("(',' || IFNULL(genres,'') || ',') LIKE ?"); args.append(f"%,{q['genre']},%")
     if q.get("year", "").isdigit():
         where.append("year=?"); args.append(int(q["year"]))
+    if q.get("missing") == "1" and uid in ADMIN_IDS:   # faqat adminlar uchun
+        where.append(MISSING)
     order = {"popular": "views DESC, created DESC", "name": "name COLLATE NOCASE"}.get(
         q.get("sort"), "created DESC")
     sql = CARD + (" WHERE " + " AND ".join(where) if where else "") + " ORDER BY " + order
-    rows = await fetch(sql, args)
 
-    text = (q.get("q") or "").strip()
-    if text:  # botdagi bilan bir xil qidiruv (o', g' apostroflari, so'z tartibi) + kod bo'yicha
-        rows = [r for r in rows if r["code"] == text or matches(text, r["name"] or "")]
-
-    limit = min(int(q.get("limit", 20) or 20), 50)
+    limit = max(1, min(int(q.get("limit", 20) or 20), 50))
     offset = max(int(q.get("offset", 0) or 0), 0)
-    page = rows[offset: offset + limit]
-    return ok({"items": [card(r) for r in page], "has_more": offset + limit < len(rows)})
+    text = (q.get("q") or "").strip()
+
+    if text:  # botdagi bilan bir xil qidiruv (o', g' apostroflari, so'z tartibi) + kod bo'yicha
+        rows = [r for r in await fetch(sql, args) if r["code"] == text or matches(text, r["name"] or "")]
+        page, has_more = rows[offset: offset + limit], offset + limit < len(rows)
+    else:     # oddiy ro'yxat: faqat kerakli qismi bazadan olinadi
+        rows = await fetch(sql + " LIMIT ? OFFSET ?", args + [limit + 1, offset])
+        page, has_more = rows[:limit], len(rows) > limit
+
+    out = {"items": [card(r) for r in page], "has_more": has_more}
+    if offset == 0:  # filtr uchun mavjud yillar
+        out["years"] = [r["y"] for r in await fetch(
+            f"SELECT DISTINCT year y FROM ({ITEMS}) WHERE year IS NOT NULL ORDER BY year DESC")]
+    return ok(out)
 
 
 async def random_item(request):
@@ -215,6 +328,10 @@ async def item(request):
         last = await fetch("""SELECT episode_number n FROM watch_history WHERE user_id=? AND code=?
             AND episode_number IS NOT NULL ORDER BY id DESC LIMIT 1""", (uid, code))
         out["last_episode"] = last[0]["n"] if last else None
+    if uid in ADMIN_IDS:
+        out["description"] = r["description"] or ""
+        nxt = await fetch(f"SELECT code FROM ({ITEMS}) WHERE {MISSING} AND code != ? ORDER BY created DESC LIMIT 1", (code,))
+        out["next_missing"] = nxt[0]["code"] if nxt else None
     return ok(out)
 
 
@@ -359,12 +476,38 @@ def setup_miniapp(app: web.Application, bot):
     app.add_subapp("/api", api)
     app.router.add_get("/poster/{code}", poster)
 
-    async def _nocache(request, response):  # Telegram eski CSS/JS ni keshlab qolmasligi uchun
-        if request.path.startswith("/app"):
-            response.headers["Cache-Control"] = "no-cache"
+    def index_html() -> web.Response:
+        """index.html dagi ?v=... ni fayl mazmunining qisqa xeshiga almashtiradi:
+        fayl o'zgarsa versiya ham o'zgaradi, o'zgarmasa brauzer keshdan oladi."""
+        html_text = (WEBAPP_DIR / "index.html").read_text(encoding="utf-8")
 
-    app.on_response_prepare.append(_nocache)
-    nocache = {"Cache-Control": "no-cache"}
+        def stamp(match):
+            name = match.group(1)
+            digest = hashlib.md5((WEBAPP_DIR / name).read_bytes()).hexdigest()[:8]
+            return f"{name}?v={digest}"
+
+        html_text = re.sub(r"(style\.css|app\.js)\?v=\w+", stamp, html_text)
+        resp = web.Response(text=html_text, content_type="text/html", headers={"Cache-Control": "no-cache"})
+        resp.enable_compression()
+        return resp
+
+    root = WEBAPP_DIR.resolve()
+    types = {".js": "application/javascript", ".css": "text/css", ".html": "text/html"}
+
+    async def static_file(request):
+        path = (WEBAPP_DIR / request.match_info["name"]).resolve()
+        if root not in path.parents or not path.is_file():
+            raise web.HTTPNotFound()
+        ctype = types.get(path.suffix)
+        if ctype:  # matn fayllari: siqiladi; ?v=<xesh> bilan kelsa — bir yil keshlanadi
+            resp = web.Response(body=path.read_bytes(), content_type=ctype, charset="utf-8")
+            resp.enable_compression()
+        else:
+            resp = web.FileResponse(path)
+        versioned = "v" in request.query and ctype in ("application/javascript", "text/css")
+        resp.headers["Cache-Control"] = "public, max-age=31536000, immutable" if versioned else "no-cache"
+        return resp
+
     app.router.add_get("/app", lambda r: web.HTTPFound("/app/"))
-    app.router.add_get("/app/", lambda r: web.FileResponse(WEBAPP_DIR / "index.html", headers=nocache))
-    app.router.add_static("/app/", WEBAPP_DIR)
+    app.router.add_get("/app/", lambda r: index_html())
+    app.router.add_get("/app/{name:.+}", static_file)

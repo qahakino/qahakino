@@ -1,3 +1,6 @@
+import asyncio
+import contextlib
+
 import aiosqlite
 
 from config import DB_PATH
@@ -6,9 +9,39 @@ from config import DB_PATH
 class Database:
     def __init__(self, path: str):
         self.path = path
+        self._conn: aiosqlite.Connection | None = None
+        self._conn_lock = asyncio.Lock()
+        # Qidiruv uchun ro'yxatlar xotirada saqlanadi (qo'shish/o'chirishda tozalanadi)
+        self._cache: dict[str, list] = {}
+
+    # ---------- ulanish ----------
+    # Har so'rovda yangi ulanish ochish o'rniga bitta doimiy ulanish ishlatiladi:
+    # bu har bir bazaga murojaatni sezilarli tezlashtiradi.
+
+    async def _get_conn(self) -> aiosqlite.Connection:
+        if self._conn is None:
+            async with self._conn_lock:
+                if self._conn is None:
+                    conn = await aiosqlite.connect(self.path)
+                    await conn.execute("PRAGMA journal_mode=WAL")    # o'qish yozishga xalaqit bermaydi
+                    await conn.execute("PRAGMA synchronous=NORMAL")  # WAL bilan xavfsiz va tez
+                    await conn.execute("PRAGMA busy_timeout=5000")
+                    await conn.execute("PRAGMA temp_store=MEMORY")
+                    await conn.execute("PRAGMA cache_size=-20000")   # ~20 MB kesh
+                    self._conn = conn
+        return self._conn
+
+    @contextlib.asynccontextmanager
+    async def conn(self):
+        yield await self._get_conn()
+
+    async def close(self):
+        if self._conn is not None:
+            await self._conn.close()
+            self._conn = None
 
     async def init(self):
-        async with aiosqlite.connect(self.path) as conn:
+        async with self.conn() as conn:
             await conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS users (
@@ -78,10 +111,16 @@ class Database:
             if "parts" not in clip_columns:
                 await conn.execute("ALTER TABLE clips ADD COLUMN parts TEXT")
 
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_episodes_series "
+                "ON episodes(series_id, episode_number)"
+            )
+
             await conn.commit()
 
     async def delete_series(self, code: str):
-        async with aiosqlite.connect(self.path) as conn:
+        self._cache.clear()
+        async with self.conn() as conn:
             # Avval serialni topamiz
             cur = await conn.execute(
                 """
@@ -135,7 +174,7 @@ class Database:
     # ---------- foydalanuvchilar ----------
 
     async def add_user(self, user_id: int, full_name: str, username: str | None):
-        async with aiosqlite.connect(self.path) as conn:
+        async with self.conn() as conn:
             await conn.execute(
                 "INSERT OR IGNORE INTO users (user_id, full_name, username) VALUES (?, ?, ?)",
                 (user_id, full_name, username),
@@ -143,13 +182,13 @@ class Database:
             await conn.commit()
 
     async def users_count(self) -> int:
-        async with aiosqlite.connect(self.path) as conn:
+        async with self.conn() as conn:
             cur = await conn.execute("SELECT COUNT(*) FROM users")
             row = await cur.fetchone()
             return row[0] if row else 0
 
     async def all_user_ids(self) -> list[int]:
-        async with aiosqlite.connect(self.path) as conn:
+        async with self.conn() as conn:
             cur = await conn.execute("SELECT user_id FROM users")
             rows = await cur.fetchall()
             return [r[0] for r in rows]
@@ -157,7 +196,8 @@ class Database:
     # ---------- kinolar ----------
 
     async def add_movie(self, code: str, name: str, chat_id: int, message_id: int):
-        async with aiosqlite.connect(self.path) as conn:
+        self._cache.clear()
+        async with self.conn() as conn:
             await conn.execute(
                 """
                 INSERT OR REPLACE INTO movies (code, name, chat_id, message_id)
@@ -168,7 +208,7 @@ class Database:
             await conn.commit()
 
     async def get_movie(self, code: str):
-        async with aiosqlite.connect(self.path) as conn:
+        async with self.conn() as conn:
             cur = await conn.execute(
                 "SELECT code, name, chat_id, message_id FROM movies WHERE code = ?",
                 (code,),
@@ -176,13 +216,14 @@ class Database:
             return await cur.fetchone()
 
     async def movies_count(self) -> int:
-        async with aiosqlite.connect(self.path) as conn:
+        async with self.conn() as conn:
             cur = await conn.execute("SELECT COUNT(*) FROM movies")
             row = await cur.fetchone()
             return row[0] if row else 0
 
     async def delete_movie(self, code: str) -> bool:
-        async with aiosqlite.connect(self.path) as conn:
+        self._cache.clear()
+        async with self.conn() as conn:
             cur = await conn.execute("DELETE FROM movies WHERE code = ?", (code,))
             await conn.commit()
             return cur.rowcount > 0
@@ -190,7 +231,7 @@ class Database:
     # ---------- umumiy kod ----------
 
     async def code_exists(self, code: str) -> bool:
-        async with aiosqlite.connect(self.path) as conn:
+        async with self.conn() as conn:
             cur = await conn.execute(
                 """
                 SELECT 1 FROM movies WHERE code = ?
@@ -211,7 +252,8 @@ class Database:
         poster_chat_id: int,
         poster_message_id: int,
     ) -> int:
-        async with aiosqlite.connect(self.path) as conn:
+        self._cache.clear()
+        async with self.conn() as conn:
             cur = await conn.execute(
                 """
                 INSERT INTO series (code, name, poster_chat_id, poster_message_id)
@@ -223,7 +265,7 @@ class Database:
             return cur.lastrowid
 
     async def get_series_by_code(self, code: str):
-        async with aiosqlite.connect(self.path) as conn:
+        async with self.conn() as conn:
             cur = await conn.execute(
                 """
                 SELECT id, code, name, poster_chat_id, poster_message_id
@@ -235,7 +277,7 @@ class Database:
             return await cur.fetchone()
 
     async def get_series(self, series_id: int):
-        async with aiosqlite.connect(self.path) as conn:
+        async with self.conn() as conn:
             cur = await conn.execute(
                 """
                 SELECT id, code, name, poster_chat_id, poster_message_id
@@ -247,14 +289,16 @@ class Database:
             return await cur.fetchone()
 
     async def all_series(self):
-        async with aiosqlite.connect(self.path) as conn:
-            cur = await conn.execute(
-                "SELECT id, code, name FROM series ORDER BY name COLLATE NOCASE"
-            )
-            return await cur.fetchall()
+        if "series" not in self._cache:
+            async with self.conn() as conn:
+                cur = await conn.execute(
+                    "SELECT id, code, name FROM series ORDER BY name COLLATE NOCASE"
+                )
+                self._cache["series"] = await cur.fetchall()
+        return self._cache["series"]
 
     async def series_count(self) -> int:
-        async with aiosqlite.connect(self.path) as conn:
+        async with self.conn() as conn:
             cur = await conn.execute("SELECT COUNT(*) FROM series")
             row = await cur.fetchone()
             return row[0] if row else 0
@@ -266,7 +310,7 @@ class Database:
         chat_id: int,
         message_id: int,
     ) -> bool:
-        async with aiosqlite.connect(self.path) as conn:
+        async with self.conn() as conn:
             try:
                 await conn.execute(
                     """
@@ -282,7 +326,7 @@ class Database:
                 return False
 
     async def get_episode(self, episode_id: int):
-        async with aiosqlite.connect(self.path) as conn:
+        async with self.conn() as conn:
             cur = await conn.execute(
                 """
                 SELECT id, series_id, episode_number, chat_id, message_id
@@ -294,7 +338,7 @@ class Database:
             return await cur.fetchone()
 
     async def get_episode_by_number(self, series_id: int, episode_number: int):
-        async with aiosqlite.connect(self.path) as conn:
+        async with self.conn() as conn:
             cur = await conn.execute(
                 """
                 SELECT id, series_id, episode_number, chat_id, message_id
@@ -306,7 +350,7 @@ class Database:
             return await cur.fetchone()
 
     async def get_episodes(self, series_id: int):
-        async with aiosqlite.connect(self.path) as conn:
+        async with self.conn() as conn:
             cur = await conn.execute(
                 """
                 SELECT id, episode_number, chat_id, message_id
@@ -322,11 +366,13 @@ class Database:
 
     async def all_movies_basic(self):
         """[(code, name), ...] — qidiruv Python tomonda (o', g' harflari uchun) bajariladi."""
-        async with aiosqlite.connect(self.path) as conn:
-            cur = await conn.execute(
-                "SELECT code, name FROM movies ORDER BY name COLLATE NOCASE"
-            )
-            return await cur.fetchall()
+        if "movies" not in self._cache:
+            async with self.conn() as conn:
+                cur = await conn.execute(
+                    "SELECT code, name FROM movies ORDER BY name COLLATE NOCASE"
+                )
+                self._cache["movies"] = await cur.fetchall()
+        return self._cache["movies"]
 
     # ---------- ovozli parchalar ----------
 
@@ -341,7 +387,7 @@ class Database:
         bg_file_id: str | None = None,
         parts_json: str | None = None,
     ) -> int:
-        async with aiosqlite.connect(self.path) as conn:
+        async with self.conn() as conn:
             cur = await conn.execute(
                 """
                 INSERT INTO clips
@@ -357,7 +403,7 @@ class Database:
 
     async def get_clip(self, clip_id: int):
         """(id, title, script, video_file_id, duration)"""
-        async with aiosqlite.connect(self.path) as conn:
+        async with self.conn() as conn:
             cur = await conn.execute(
                 """
                 SELECT id, title, script, video_file_id, duration
@@ -371,7 +417,7 @@ class Database:
         """Qismli (yangi) parchalar uchun to'liq ma'lumot, dict yoki None."""
         import json
 
-        async with aiosqlite.connect(self.path) as conn:
+        async with self.conn() as conn:
             cur = await conn.execute(
                 """
                 SELECT id, title, script, video_file_id, duration,
@@ -403,21 +449,21 @@ class Database:
 
     async def all_clips(self):
         """[(id, title, duration), ...]"""
-        async with aiosqlite.connect(self.path) as conn:
+        async with self.conn() as conn:
             cur = await conn.execute(
                 "SELECT id, title, duration FROM clips ORDER BY id DESC"
             )
             return await cur.fetchall()
 
     async def clips_count(self) -> int:
-        async with aiosqlite.connect(self.path) as conn:
+        async with self.conn() as conn:
             cur = await conn.execute("SELECT COUNT(*) FROM clips")
             row = await cur.fetchone()
             return row[0] if row else 0
 
     async def delete_clip(self, clip_id: int):
         """O'chirilgan parcha ma'lumotini qaytaradi (yoki None)."""
-        async with aiosqlite.connect(self.path) as conn:
+        async with self.conn() as conn:
             cur = await conn.execute(
                 """
                 SELECT id, title, storage_chat_id, storage_message_id

@@ -30,6 +30,36 @@ WEBHOOK_PATH = "/webhook"
 WEBHOOK_URL = "https://qahakino-production.up.railway.app/webhook"
 
 
+_TASKS: set[asyncio.Task] = set()
+_USER_LOCKS: dict[int, asyncio.Lock] = {}
+_USER_REFS: dict[int, int] = {}
+_GLOBAL_LIMIT = asyncio.Semaphore(100)  # bir vaqtda ko'pi bilan 100 ta update
+
+
+def _update_user_id(update: Update) -> int:
+    for event in (update.message, update.callback_query, update.edited_message):
+        if event is not None and event.from_user is not None:
+            return event.from_user.id
+    return 0
+
+
+async def _process_update(bot: Bot, dp: Dispatcher, update: Update):
+    key = _update_user_id(update)
+    _USER_REFS[key] = _USER_REFS.get(key, 0) + 1
+    lock = _USER_LOCKS.setdefault(key, asyncio.Lock())
+    try:
+        async with lock:
+            async with _GLOBAL_LIMIT:
+                await dp.feed_update(bot, update)
+    except Exception:
+        logging.exception("Update qayta ishlashda xatolik")
+    finally:
+        _USER_REFS[key] -= 1
+        if _USER_REFS[key] <= 0:
+            _USER_REFS.pop(key, None)
+            _USER_LOCKS.pop(key, None)
+
+
 async def health(request):
     return web.Response(text="OK")
 
@@ -47,10 +77,11 @@ async def webhook(request):
     data = await request.json()
     update = Update.model_validate(data, context={"bot": bot})
 
-    try:
-        await dp.feed_update(bot, update)
-    except Exception:
-        logging.exception("Update qayta ishlashda xatolik")
+    # Telegram'ga DARHOL "OK" qaytaramiz, update esa fonda ishlanadi.
+    # Bir foydalanuvchining xabarlari ketma-ket (tartib bilan) bajariladi.
+    task = asyncio.create_task(_process_update(bot, dp, update))
+    _TASKS.add(task)
+    task.add_done_callback(_TASKS.discard)
 
     return web.Response(text="OK")
 
@@ -183,6 +214,10 @@ async def main():
                     description="Ovozli parchalar ro‘yxati"
                 ),
                 BotCommand(
+                    command="info",
+                    description="Kinoga izoh, yil, janr yozish"
+                ),
+                BotCommand(
                     command="backup",
                     description="Bazani yuklab olish"
                 ),
@@ -230,6 +265,7 @@ async def main():
     finally:
         await bot.delete_webhook()
         await bot.session.close()
+        await db.close()
 
 
 if __name__ == "__main__":

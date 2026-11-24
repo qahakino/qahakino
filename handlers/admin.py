@@ -21,7 +21,7 @@ from aiogram.types import (
 
 from config import ADMIN_IDS, MAX_DOWNLOAD_BYTES, STORAGE_CHANNEL_ID
 from database import db
-from miniapp import set_poster
+from miniapp import GENRES, get_info, next_missing_info, parse_info, set_info, set_poster
 from keyboards import admin_clips_keyboard, serial_admin_keyboard
 from utils.parts import parse_parts
 from states import AdminStates
@@ -181,21 +181,18 @@ async def process_movie_poster(message: Message, state: FSMContext):
     if not is_admin(message.from_user.id):
         return
     code = (await state.get_data()).get("movie_code")
-    await state.clear()
     if code:
         await set_poster(code, message.photo[-1].file_id)
-    await message.answer(
-        "✅ Poster saqlandi. Keyinroq o'zgartirish: Mini App → kino sahifasi → "
-        "«🖼 Posterni o'zgartirish»."
-    )
+    await message.answer("✅ Poster saqlandi.")
+    await _ask_info_for_new_movie(message, state, code)
 
 
 @router.message(StateFilter(AdminStates.waiting_movie_poster), Command("skip"))
 async def skip_movie_poster(message: Message, state: FSMContext):
     if not is_admin(message.from_user.id):
         return
-    await state.clear()
-    await message.answer("👌 Poster qo'shilmadi. Keyin Mini App orqali qo'shishingiz mumkin.")
+    await message.answer("👌 Poster qo'shilmadi (keyin Mini App orqali qo'shishingiz mumkin).")
+    await _ask_info_for_new_movie(message, state, (await state.get_data()).get("movie_code"))
 
 
 @router.message(
@@ -241,6 +238,150 @@ async def save_to_storage(
     )
 
     return STORAGE_CHANNEL_ID, copied.message_id
+
+
+# ============================================================
+# IZOH / YIL / JANR (kino qo'shgandan keyin va /info)
+# ============================================================
+
+INFO_HELP = (
+    "Qisqa <b>izoh</b> yozing — Mini App'da kino sahifasida ko'rinadi.\n\n"
+    "Yil, janr va davomiylikni ham kiritish uchun <b>birinchi qatorga</b> shunday yozing:\n"
+    "<code>2024 | Komediya, Drama | 120</code>\n"
+    "<i>(yil | janrlar | daqiqa — hammasi ixtiyoriy)</i>\n"
+    "Izoh keyingi qatordan boshlanadi.\n\n"
+    f"Janrlar: {', '.join(GENRES)}\n\n"
+    "O'tkazib yuborish: /skip"
+)
+
+
+def _info_summary(info: dict) -> str:
+    parts = []
+    if info.get("year"):
+        parts.append(f"📅 {info['year']}")
+    if info.get("genres"):
+        parts.append("🎭 " + ", ".join(info["genres"]))
+    if info.get("duration"):
+        parts.append(f"⏱ {info['duration']} daq")
+    if info.get("description"):
+        parts.append(f"📝 {len(info['description'])} belgi")
+    return " · ".join(parts)
+
+
+async def _ask_info_for_new_movie(message: Message, state: FSMContext, code: str | None):
+    await state.set_state(AdminStates.waiting_movie_info)
+    await state.update_data(info_code=code, info_queue=False)
+    await message.answer("📝 <b>Kino haqida izoh</b>\n\n" + INFO_HELP)
+
+
+async def _prompt_info(message: Message, state: FSMContext, code: str, queue: bool, skipped: list):
+    item = await get_info(code)
+    if not item:
+        await state.clear()
+        await message.answer(f"❌ <code>{html.escape(code)}</code> kodi bilan kino ham, serial ham topilmadi.")
+        return
+    await state.set_state(AdminStates.waiting_info_text)
+    await state.update_data(info_code=code, info_queue=queue, info_skipped=skipped)
+
+    current = _info_summary({
+        "year": item["year"], "duration": item["duration"],
+        "genres": [g for g in (item["genres"] or "").split(",") if g],
+        "description": item["description"],
+    }) or "hali hech narsa yo'q"
+    await message.answer(
+        f"{'📺' if item['kind'] == 'series' else '🎬'} <b>{html.escape(item['name'] or '')}</b> "
+        f"(kod: <code>{html.escape(code)}</code>)\n"
+        f"Hozir: {current}\n\n" + INFO_HELP
+    )
+
+
+@router.message(Command("info"))
+async def cmd_info(message: Message, state: FSMContext, command: CommandObject):
+    if not is_admin(message.from_user.id):
+        return
+    await state.clear()
+    code = (command.args or "").strip()
+    if code:  # /info 101 — bitta kino
+        await _prompt_info(message, state, code, queue=False, skipped=[])
+        return
+    # /info — izohi/janri yo'q kinolarni birin-ketin to'ldirish
+    nxt = await next_missing_info()
+    if not nxt:
+        await message.answer("✅ Hamma kino va seriallarda izoh va janr bor.")
+        return
+    await message.answer("📝 Ma'lumoti yetishmaydigan kinolarni birin-ketin to'ldiramiz. Tugatish: /cancel")
+    await _prompt_info(message, state, nxt, queue=True, skipped=[])
+
+
+async def _next_in_queue(message: Message, state: FSMContext, skipped: list):
+    nxt = await next_missing_info(skipped)
+    if not nxt:
+        await state.clear()
+        await message.answer("🎉 Tayyor! Ma'lumoti yetishmaydigan kino qolmadi.")
+        return
+    await _prompt_info(message, state, nxt, queue=True, skipped=skipped)
+
+
+@router.message(
+    StateFilter(AdminStates.waiting_movie_info, AdminStates.waiting_info_text),
+    F.text,
+    ~F.text.startswith("/"),
+)
+async def process_info_text(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    data = await state.get_data()
+    code = data.get("info_code")
+    if not code:
+        await state.clear()
+        await message.answer("❌ Ma'lumot yo'qolgan. /info orqali qaytadan boshlang.")
+        return
+
+    info = parse_info(message.text)
+    if not any(info[k] is not None for k in ("description", "year", "genres", "duration")):
+        await message.answer("❌ Hech narsa tanib bo'lmadi. Izoh yozing yoki /skip.")
+        return
+
+    await set_info(
+        code, description=info["description"], year=info["year"],
+        genres=info["genres"], duration=info["duration"],
+    )
+    text = "✅ Saqlandi: " + _info_summary(info)
+    if info["unknown"]:
+        text += (
+            f"\n\n⚠️ Noma'lum janr: <b>{html.escape(', '.join(info['unknown']))}</b> — qo'shilmadi.\n"
+            f"Mavjud janrlar: {', '.join(GENRES)}"
+        )
+    await message.answer(text)
+
+    if data.get("info_queue"):
+        await _next_in_queue(message, state, list(data.get("info_skipped") or []))
+    else:
+        await state.clear()
+
+
+@router.message(StateFilter(AdminStates.waiting_movie_info, AdminStates.waiting_info_text), Command("skip"))
+async def skip_info(message: Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    data = await state.get_data()
+    if data.get("info_queue"):
+        skipped = list(data.get("info_skipped") or []) + [data.get("info_code")]
+        await message.answer("⏭ O'tkazib yuborildi.")
+        await _next_in_queue(message, state, skipped)
+        return
+    await state.clear()
+    await message.answer("👌 Izoh qo'shilmadi. Keyin /info yoki Mini App orqali qo'shishingiz mumkin.")
+
+
+@router.message(
+    StateFilter(AdminStates.waiting_movie_info, AdminStates.waiting_info_text),
+    ~F.text.startswith("/"),
+)
+async def info_wrong_type(message: Message):
+    if not is_admin(message.from_user.id):
+        return
+    await message.answer("❌ Matn yuboring (izoh yozing) yoki /skip.")
 
 
 # ============================================================

@@ -3,8 +3,6 @@
 Har bir matn (uz, ru, en) tartibida. Foydalanuvchi tili `users.lang` ustunida
 saqlanadi va bot bilan Mini App uchun umumiy.
 """
-import aiosqlite
-
 from database import db
 
 LANGS = ("uz", "ru", "en")
@@ -292,7 +290,7 @@ async def get_lang(user_id: int) -> str | None:
     if user_id in _cache:
         return _cache[user_id]
     try:
-        async with aiosqlite.connect(db.path) as conn:
+        async with db.conn() as conn:
             cur = await conn.execute("SELECT lang FROM users WHERE user_id = ?", (user_id,))
             row = await cur.fetchone()
     except Exception:
@@ -311,7 +309,7 @@ async def ulang(user_id: int) -> str:
 async def set_lang(user_id: int, lang: str):
     if lang not in LANGS:
         return
-    async with aiosqlite.connect(db.path) as conn:
+    async with db.conn() as conn:
         await conn.execute(
             "INSERT OR IGNORE INTO users (user_id, full_name, username) VALUES (?, '', NULL)",
             (user_id,),
