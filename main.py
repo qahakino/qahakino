@@ -21,7 +21,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 
 from config import BOT_TOKEN, ADMIN_IDS, WEBHOOK_SECRET
 from database import db
-from handlers import admin, user
+from handlers import admin, orders, user
 from utils.media import ffmpeg_available
 from miniapp import WEBAPP_URL, migrate, setup_miniapp
 
@@ -151,6 +151,7 @@ async def main():
     dp.errors.register(on_error)
 
     dp.include_router(admin.router)
+    dp.include_router(orders.router)   # kino buyurtmalari (user.router dan OLDIN bo'lishi shart)
     dp.include_router(user.router)
 
     # Oddiy foydalanuvchilar uchun commandlar
@@ -164,17 +165,22 @@ async def main():
                 command="lang",
                 description="Tilni o'zgartirish"
             ),
+            BotCommand(
+                command="orders",
+                description="Mening buyurtmalarim"
+            ),
         ],
         scope=BotCommandScopeDefault(),
     )
     # Til bo'yicha buyruqlar tavsifi (Telegram foydalanuvchi tiliga qarab ko'rsatadi)
-    for code, start_text, lang_text in (
-        ("ru", "Запустить бота", "Сменить язык"),
-        ("en", "Start the bot", "Change language"),
+    for code, start_text, lang_text, orders_text in (
+        ("ru", "Запустить бота", "Сменить язык", "Мои заказы"),
+        ("en", "Start the bot", "Change language", "My orders"),
     ):
         await bot.set_my_commands(
             [BotCommand(command="start", description=start_text),
-             BotCommand(command="lang", description=lang_text)],
+             BotCommand(command="lang", description=lang_text),
+             BotCommand(command="orders", description=orders_text)],
             scope=BotCommandScopeDefault(),
             language_code=code,
         )

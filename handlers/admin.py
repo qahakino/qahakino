@@ -763,6 +763,18 @@ async def cmd_backup(message: Message, state: FSMContext):
 # /STATS
 # ============================================================
 
+@router.message(Command("chatid"))
+async def cmd_chatid(message: Message):
+    """Guruh ID sini bilish uchun: botni guruhga qo'shib, guruhda /chatid yozing."""
+    if not is_admin(message.from_user.id):
+        return
+    await message.answer(
+        f"🆔 Chat ID: <code>{message.chat.id}</code>\n\n"
+        "Buyurtmalar shu guruhga kelishi uchun, Railway'da "
+        f"<code>ORDERS_CHAT_ID={message.chat.id}</code> o'zgaruvchisini qo'shing."
+    )
+
+
 @router.message(Command("stats"))
 async def cmd_stats(message: Message):
     if not is_admin(message.from_user.id):
@@ -772,13 +784,15 @@ async def cmd_stats(message: Message):
     movies_count = await db.movies_count()
     series_count = await db.series_count()
     clips_count = await db.clips_count()
+    pending_orders = await db.pending_orders_count()
 
     await message.answer(
         "📊 <b>Bot statistikasi</b>\n\n"
         f"👥 Foydalanuvchilar: <b>{users_count}</b>\n"
         f"🎬 Kinolar: <b>{movies_count}</b>\n"
         f"📺 Seriallar: <b>{series_count}</b>\n"
-        f"🎙 Ovozli parchalar: <b>{clips_count}</b>"
+        f"🎙 Ovozli parchalar: <b>{clips_count}</b>\n"
+        f"📨 Kutilayotgan buyurtmalar: <b>{pending_orders}</b>"
     )
 
 

@@ -116,6 +116,39 @@ class Database:
                 "ON episodes(series_id, episode_number)"
             )
 
+            # Kino buyurtmalari
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS orders (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    username TEXT,
+                    full_name TEXT,
+                    title TEXT NOT NULL,
+                    movie_lang TEXT NOT NULL,
+                    user_lang TEXT,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    code TEXT,
+                    reason TEXT,
+                    handled_by INTEGER,
+                    handled_at TEXT,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_orders_user ON orders(user_id, status)"
+            )
+            await conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS order_msgs (
+                    order_id INTEGER NOT NULL,
+                    chat_id INTEGER NOT NULL,
+                    message_id INTEGER NOT NULL
+                )
+                """
+            )
+
             await conn.commit()
 
     async def delete_series(self, code: str):
@@ -361,6 +394,91 @@ class Database:
                 (series_id,),
             )
             return await cur.fetchall()
+
+    # ---------- buyurtmalar ----------
+
+    @staticmethod
+    def _dicts(cur, rows) -> list[dict]:
+        cols = [d[0] for d in cur.description]
+        return [dict(zip(cols, r)) for r in rows]
+
+    async def create_order(
+        self, user_id: int, username: str | None, full_name: str,
+        title: str, movie_lang: str, user_lang: str,
+    ) -> int:
+        async with self.conn() as conn:
+            cur = await conn.execute(
+                """
+                INSERT INTO orders (user_id, username, full_name, title, movie_lang, user_lang)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (user_id, username, full_name, title, movie_lang, user_lang),
+            )
+            await conn.commit()
+            return cur.lastrowid
+
+    async def get_order(self, order_id: int) -> dict | None:
+        async with self.conn() as conn:
+            cur = await conn.execute("SELECT * FROM orders WHERE id = ?", (order_id,))
+            rows = self._dicts(cur, await cur.fetchall())
+            return rows[0] if rows else None
+
+    async def count_open_orders(self, user_id: int) -> int:
+        async with self.conn() as conn:
+            cur = await conn.execute(
+                "SELECT COUNT(*) FROM orders WHERE user_id = ? AND status = 'pending'", (user_id,)
+            )
+            return (await cur.fetchone())[0]
+
+    async def user_orders(self, user_id: int, limit: int = 10) -> list[dict]:
+        async with self.conn() as conn:
+            cur = await conn.execute(
+                "SELECT * FROM orders WHERE user_id = ? ORDER BY id DESC LIMIT ?", (user_id, limit)
+            )
+            return self._dicts(cur, await cur.fetchall())
+
+    async def pending_orders(self) -> list[dict]:
+        async with self.conn() as conn:
+            cur = await conn.execute("SELECT * FROM orders WHERE status = 'pending' ORDER BY id")
+            return self._dicts(cur, await cur.fetchall())
+
+    async def pending_orders_count(self) -> int:
+        async with self.conn() as conn:
+            cur = await conn.execute("SELECT COUNT(*) FROM orders WHERE status = 'pending'")
+            return (await cur.fetchone())[0]
+
+    async def add_order_msg(self, order_id: int, chat_id: int, message_id: int):
+        async with self.conn() as conn:
+            await conn.execute(
+                "INSERT INTO order_msgs (order_id, chat_id, message_id) VALUES (?, ?, ?)",
+                (order_id, chat_id, message_id),
+            )
+            await conn.commit()
+
+    async def order_msgs(self, order_id: int) -> list[tuple]:
+        async with self.conn() as conn:
+            cur = await conn.execute(
+                "SELECT chat_id, message_id FROM order_msgs WHERE order_id = ?", (order_id,)
+            )
+            return await cur.fetchall()
+
+    async def finish_order(
+        self, order_id: int, status: str, code: str | None = None,
+        reason: str | None = None, handled_by: int | None = None,
+    ) -> bool:
+        """Buyurtmani yakunlaydi. Faqat kutilayotgan bo'lsa (ikki admin bir vaqtda
+        bosib yuborsa ham, faqat bittasi o'tadi)."""
+        async with self.conn() as conn:
+            cur = await conn.execute(
+                """
+                UPDATE orders
+                SET status = ?, code = ?, reason = ?, handled_by = ?, handled_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND status = 'pending'
+                """,
+                (status, code, reason, handled_by, order_id),
+            )
+            await conn.commit()
+            return cur.rowcount > 0
 
     # ---------- nom bo'yicha qidiruv uchun ----------
 

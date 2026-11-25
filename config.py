@@ -16,6 +16,11 @@ ADMIN_IDS = [int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip()]
 # Masalan: STORAGE_CHANNEL_ID=-1001234567890
 STORAGE_CHANNEL_ID = int(os.getenv("STORAGE_CHANNEL_ID", "0"))
 
+# Kino buyurtmalari keladigan GURUH ID si (bot shu guruhda bo'lishi kerak).
+# Guruhda adminlardan biri /chatid yozsa, bot ID ni ko'rsatadi. Masalan: ORDERS_CHAT_ID=-1001234567890
+# Bo'sh qoldirilsa, buyurtmalar har bir adminning shaxsiy chatiga yuboriladi.
+ORDERS_CHAT_ID = int(os.getenv("ORDERS_CHAT_ID", "0") or 0)
+
 DB_PATH = os.getenv("DB_PATH", "bot.db")
 
 # Webhook xavfsizligi uchun (ixtiyoriy, lekin tavsiya etiladi).

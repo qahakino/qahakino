@@ -17,7 +17,8 @@ def main_menu_keyboard(lang: str = "uz") -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text=t(lang, "btn_code")), KeyboardButton(text=t(lang, "btn_name"))],
-            [KeyboardButton(text=t(lang, "btn_voice")), KeyboardButton(text=t(lang, "btn_lang"))],
+            [KeyboardButton(text=t(lang, "btn_voice")), KeyboardButton(text=t(lang, "btn_order"))],
+            [KeyboardButton(text=t(lang, "btn_lang"))],
         ],
         resize_keyboard=True,
         input_field_placeholder=t(lang, "input_ph"),

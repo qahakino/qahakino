@@ -37,9 +37,19 @@ class AdminStates(StatesGroup):
     waiting_clip_parts = State()   # 3) vaqt belgili matn qismlari
 
 
+class OrderStates(StatesGroup):
+    # Admin buyurtmani bajarayotganda shaxsiy chatda yozadigan narsalar
+    waiting_code = State()
+    waiting_reason = State()
+
+
 class UserStates(StatesGroup):
     # "🔎 Nomi orqali qidirish" bosilgandan keyin
     waiting_name = State()
+
+    # Kino buyurtma qilish
+    waiting_order_title = State()
+    waiting_order_lang = State()
 
     # Eski usul: bitta ovoz bilan butun videoni almashtirish
     waiting_voice = State()

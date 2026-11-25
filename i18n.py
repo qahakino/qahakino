@@ -267,10 +267,99 @@ TEXTS: dict[str, tuple[str, str, str]] = {
         "⚠️ Не удалось создать видео. Попробуйте ещё раз чуть позже.",
         "⚠️ Couldn't create the video. Please try again in a moment.",
     ),
+
+    # ---------- kino buyurtma qilish ----------
+    "btn_order": ("🎬 Kino buyurtma qilish", "🎬 Заказать фильм", "🎬 Order a movie"),
+    "order_prompt": (
+        "🎬 <b>Kino buyurtma qilish</b>\n\nBizda yo'q kinoni buyurtma qilishingiz mumkin. "
+        "Kino nomini yozing (yil yoki aktyorlarni ham yozsangiz, topish osonroq bo'ladi).",
+        "🎬 <b>Заказ фильма</b>\n\nВы можете заказать фильм, которого у нас нет. "
+        "Напишите название (если добавите год или актёров, искать будет проще).",
+        "🎬 <b>Order a movie</b>\n\nYou can order a movie we don't have yet. "
+        "Type its title (adding the year or actors makes it easier to find).",
+    ),
+    "order_my_btn": ("📋 Mening buyurtmalarim", "📋 Мои заказы", "📋 My orders"),
+    "order_limit": (
+        "⏳ Sizda allaqachon {n} ta kutilayotgan buyurtma bor. Ular bajarilgach yangisini bera olasiz.",
+        "⏳ У вас уже {n} необработанных заказа(ов). Новый можно оформить после их выполнения.",
+        "⏳ You already have {n} pending orders. You can place a new one once they are processed.",
+    ),
+    "order_title_err": (
+        "❌ Kino nomi 2 tadan 120 tagacha belgi bo'lishi kerak.",
+        "❌ Название должно быть от 2 до 120 символов.",
+        "❌ The title must be 2–120 characters long.",
+    ),
+    "order_exists": (
+        "✅ Bunday kino bizda bor! Pastdan tanlang. Agar boshqa kinoni nazarda tutgan bo'lsangiz, buyurtma bering.",
+        "✅ Такой фильм у нас уже есть! Выберите ниже. Если вы имели в виду другой, оформите заказ.",
+        "✅ We already have it! Pick it below. If you meant a different movie, place an order.",
+    ),
+    "order_anyway_btn": (
+        "📨 Boshqa kino — buyurtma berish",
+        "📨 Это другой — заказать",
+        "📨 Different movie — place order",
+    ),
+    "order_ask_lang": (
+        "🌐 <b>{title}</b>\n\nKinoni qaysi tilda ko'rmoqchisiz?",
+        "🌐 <b>{title}</b>\n\nНа каком языке вы хотите смотреть?",
+        "🌐 <b>{title}</b>\n\nIn which language would you like to watch it?",
+    ),
+    "order_ok": (
+        "✅ <b>Buyurtma #{id} qabul qilindi!</b>\n\n🎬 {title}\n🌐 Til: {lang}\n\n"
+        "Kino qo'shilgach shu yerga kodini yuboramiz. Agar iloji bo'lmasa, sababini aytamiz.",
+        "✅ <b>Заказ #{id} принят!</b>\n\n🎬 {title}\n🌐 Язык: {lang}\n\n"
+        "Как только фильм появится, мы пришлём вам его код сюда. Если не получится — сообщим причину.",
+        "✅ <b>Order #{id} received!</b>\n\n🎬 {title}\n🌐 Language: {lang}\n\n"
+        "We'll send you the code here as soon as the movie is added. If it's not possible, we'll tell you why.",
+    ),
+    "order_done": (
+        "🎉 <b>Buyurtmangiz tayyor!</b>\n\n🎬 {title}\n🔑 Kodi: <code>{code}</code>\n\n"
+        "Kodni shu yerga yuboring yoki pastdagi tugmani bosing.",
+        "🎉 <b>Ваш заказ готов!</b>\n\n🎬 {title}\n🔑 Код: <code>{code}</code>\n\n"
+        "Отправьте код сюда или нажмите кнопку ниже.",
+        "🎉 <b>Your order is ready!</b>\n\n🎬 {title}\n🔑 Code: <code>{code}</code>\n\n"
+        "Send the code here or press the button below.",
+    ),
+    "order_open_btn": ("▶️ Kinoni ochish", "▶️ Открыть", "▶️ Open"),
+    "order_rej": (
+        "😔 Afsus, <b>{title}</b> buyurtmangizni bajarib bo'lmadi.\n\n{reason}",
+        "😔 К сожалению, заказ <b>{title}</b> выполнить не удалось.\n\n{reason}",
+        "😔 Sorry, we couldn't fulfil your order for <b>{title}</b>.\n\n{reason}",
+    ),
+    "reason_nf": ("Bu kinoni topa olmadik.", "Нам не удалось найти этот фильм.", "We couldn't find this movie."),
+    "reason_nl": (
+        "Bu kinoni {lang} tilida topa olmadik.",
+        "Не удалось найти этот фильм на языке: {lang}.",
+        "We couldn't find this movie in {lang}.",
+    ),
+    "reason_nq": (
+        "Yaxshi sifatdagi versiyasini topa olmadik.",
+        "Не нашли версию хорошего качества.",
+        "We couldn't find a good-quality version.",
+    ),
+    "reason_custom": ("Sabab: {reason}", "Причина: {reason}", "Reason: {reason}"),
+    "orders_empty": ("📋 Sizda hali buyurtmalar yo'q.", "📋 У вас пока нет заказов.", "📋 You have no orders yet."),
+    "orders_head": ("📋 <b>Mening buyurtmalarim</b>", "📋 <b>Мои заказы</b>", "📋 <b>My orders</b>"),
+    "order_line_pending": (
+        "⏳ #{id} {title} — kutilmoqda", "⏳ #{id} {title} — в ожидании", "⏳ #{id} {title} — pending",
+    ),
+    "order_line_done": (
+        "✅ #{id} {title} — kod: <code>{code}</code>",
+        "✅ #{id} {title} — код: <code>{code}</code>",
+        "✅ #{id} {title} — code: <code>{code}</code>",
+    ),
+    "order_line_rej": (
+        "❌ #{id} {title} — rad etildi", "❌ #{id} {title} — отклонён", "❌ #{id} {title} — declined",
+    ),
+    "order_stale": (
+        "Bu so'rov eskirgan. Qaytadan boshlang.",
+        "Запрос устарел. Начните заново.",
+        "This request is outdated. Please start again.",
+    ),
 }
 
 
-def t(lang: str, key: str, **kw) -> str:
+def t(lang: str, key: str, /, **kw) -> str:
     row = TEXTS[key]
     text = row[LANGS.index(lang)] if lang in LANGS else row[0]
     return text.format(**kw) if kw else text
