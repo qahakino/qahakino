@@ -88,10 +88,13 @@ async def execute(sql, args=()):
         await c.commit()
 
 
-def card(r):
-    return {"code": r["code"], "name": r["name"] or "", "kind": r["kind"], "year": r["year"],
+def card(r, admin: bool = False):
+    d = {"code": r["code"], "name": r["name"] or "", "kind": r["kind"], "year": r["year"],
             "genres": [g for g in (r["genres"] or "").split(",") if g], "views": r["views"] or 0,
             "poster": hashlib.md5(r["poster_file_id"].encode()).hexdigest()[:8] if r.get("poster_file_id") else None}
+    if admin:   # adminga: izoh, janr yoki poster yetishmasa belgi chiqadi
+        d["miss"] = not (r.get("description") and r.get("genres") and r.get("poster_file_id"))
+    return d
 
 
 async def set_poster(code: str, file_id: str):
@@ -300,7 +303,7 @@ async def catalog(request):
         rows = await fetch(sql + " LIMIT ? OFFSET ?", args + [limit + 1, offset])
         page, has_more = rows[:limit], len(rows) > limit
 
-    out = {"items": [card(r) for r in page], "has_more": has_more}
+    out = {"items": [card(r, uid in ADMIN_IDS) for r in page], "has_more": has_more}
     if offset == 0:  # filtr uchun mavjud yillar
         out["years"] = [r["y"] for r in await fetch(
             f"SELECT DISTINCT year y FROM ({ITEMS}) WHERE year IS NOT NULL ORDER BY year DESC")]

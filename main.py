@@ -220,6 +220,10 @@ async def main():
                     description="Ovozli parchalar ro‘yxati"
                 ),
                 BotCommand(
+                    command="kodlar",
+                    description="Band kodlar ro‘yxati"
+                ),
+                BotCommand(
                     command="info",
                     description="Kinoga izoh, yil, janr yozish"
                 ),

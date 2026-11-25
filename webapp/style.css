@@ -108,3 +108,4 @@ button.chip{border:0;color:var(--tx);font:inherit;font-size:13px;cursor:pointer}
 @keyframes fade{from{opacity:0}to{opacity:1}}
 [hidden]{display:none!important}
 .sheet .two .btn{font-size:15px;padding:13px 8px}
+.mi{position:absolute;left:6px;top:6px;z-index:1;width:24px;height:24px;border-radius:50%;background:var(--gold);display:grid;place-items:center;font-style:normal;font-size:12px}

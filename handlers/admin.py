@@ -7,6 +7,7 @@ import shutil
 import tempfile
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import quote
 
 import aiosqlite
 from aiogram import Bot, F, Router
@@ -15,13 +16,16 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import (
     CallbackQuery,
     FSInputFile,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
     Message,
     MessageOriginChannel,
+    WebAppInfo,
 )
 
 from config import ADMIN_IDS, MAX_DOWNLOAD_BYTES, STORAGE_CHANNEL_ID
 from database import db
-from miniapp import GENRES, get_info, next_missing_info, parse_info, set_info, set_poster
+from miniapp import GENRES, WEBAPP_URL, get_info, next_missing_info, parse_info, set_info, set_poster
 from keyboards import admin_clips_keyboard, serial_admin_keyboard
 from utils.parts import parse_parts
 from states import AdminStates
@@ -36,6 +40,14 @@ router = Router()
 
 def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
+
+
+def _miniapp_edit_button(code: str) -> InlineKeyboardMarkup:
+    """Mini App'ni shu kinoning «Ma'lumotni tahrirlash» oynasida ochadi."""
+    url = f"{WEBAPP_URL}?item={quote(code, safe='')}&edit=1"
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="📱 Poster, janr, izohni to'ldirish", web_app=WebAppInfo(url=url))
+    ]])
 
 
 # ============================================================
@@ -157,52 +169,22 @@ async def process_movie_content(
             message_id=message_id,
         )
 
-        await state.set_state(AdminStates.waiting_movie_poster)
+        await state.clear()
 
         await message.answer(
-            "✅ <b>Kino muvaffaqiyatli qo'shildi!</b>\n\n"
-            f"🎬 Nomi: <b>{movie_name}</b>\n"
-            f"🔑 Kodi: <b>{movie_code}</b>\n"
-            f"📦 Storage message ID: <code>{message_id}</code>\n\n"
-            "🖼 Endi kino <b>posterini rasm</b> qilib yuboring.\n"
-            "Poster kerak bo'lmasa: /skip"
+            "✅ <b>Kino qo'shildi!</b>\n\n"
+            f"🎬 {html.escape(movie_name)}\n"
+            f"🔑 Kod: <code>{html.escape(movie_code)}</code>\n\n"
+            "Poster, janr va izohni Mini App'da to'ldiring 👇",
+            reply_markup=_miniapp_edit_button(movie_code),
         )
 
     except Exception as e:
         await state.clear()
         await message.answer(
             "❌ Kino qo'shishda xatolik yuz berdi.\n\n"
-            f"<code>{e}</code>"
+            f"<code>{html.escape(str(e))}</code>"
         )
-
-
-@router.message(StateFilter(AdminStates.waiting_movie_poster), F.photo)
-async def process_movie_poster(message: Message, state: FSMContext):
-    if not is_admin(message.from_user.id):
-        return
-    code = (await state.get_data()).get("movie_code")
-    if code:
-        await set_poster(code, message.photo[-1].file_id)
-    await message.answer("✅ Poster saqlandi.")
-    await _ask_info_for_new_movie(message, state, code)
-
-
-@router.message(StateFilter(AdminStates.waiting_movie_poster), Command("skip"))
-async def skip_movie_poster(message: Message, state: FSMContext):
-    if not is_admin(message.from_user.id):
-        return
-    await message.answer("👌 Poster qo'shilmadi (keyin Mini App orqali qo'shishingiz mumkin).")
-    await _ask_info_for_new_movie(message, state, (await state.get_data()).get("movie_code"))
-
-
-@router.message(
-    StateFilter(AdminStates.waiting_movie_poster),
-    ~F.text.startswith("/"),
-)
-async def movie_poster_wrong_type(message: Message):
-    if not is_admin(message.from_user.id):
-        return
-    await message.answer("❌ Poster rasm (photo) bo'lishi kerak. Rasm yuboring yoki /skip.")
 
 
 # ============================================================
@@ -268,12 +250,6 @@ def _info_summary(info: dict) -> str:
     return " · ".join(parts)
 
 
-async def _ask_info_for_new_movie(message: Message, state: FSMContext, code: str | None):
-    await state.set_state(AdminStates.waiting_movie_info)
-    await state.update_data(info_code=code, info_queue=False)
-    await message.answer("📝 <b>Kino haqida izoh</b>\n\n" + INFO_HELP)
-
-
 async def _prompt_info(message: Message, state: FSMContext, code: str, queue: bool, skipped: list):
     item = await get_info(code)
     if not item:
@@ -323,7 +299,7 @@ async def _next_in_queue(message: Message, state: FSMContext, skipped: list):
 
 
 @router.message(
-    StateFilter(AdminStates.waiting_movie_info, AdminStates.waiting_info_text),
+    StateFilter(AdminStates.waiting_info_text),
     F.text,
     ~F.text.startswith("/"),
 )
@@ -360,7 +336,7 @@ async def process_info_text(message: Message, state: FSMContext):
         await state.clear()
 
 
-@router.message(StateFilter(AdminStates.waiting_movie_info, AdminStates.waiting_info_text), Command("skip"))
+@router.message(StateFilter(AdminStates.waiting_info_text), Command("skip"))
 async def skip_info(message: Message, state: FSMContext):
     if not is_admin(message.from_user.id):
         return
@@ -375,7 +351,7 @@ async def skip_info(message: Message, state: FSMContext):
 
 
 @router.message(
-    StateFilter(AdminStates.waiting_movie_info, AdminStates.waiting_info_text),
+    StateFilter(AdminStates.waiting_info_text),
     ~F.text.startswith("/"),
 )
 async def info_wrong_type(message: Message):
@@ -763,6 +739,71 @@ async def cmd_backup(message: Message, state: FSMContext):
 # /STATS
 # ============================================================
 
+def _natural_key(code: str):
+    """Raqamli kodlar songa qarab (9 < 10 < 101), harfli kodlar oxirida alifbo bo'yicha."""
+    return (0, int(code), code) if code.isdigit() else (1, 0, code.lower())
+
+
+def _ranges(nums: list[int]) -> str:
+    runs, start, prev = [], None, None
+    for n in nums:
+        if start is None:
+            start = prev = n
+        elif n == prev + 1:
+            prev = n
+        else:
+            runs.append((start, prev))
+            start = prev = n
+    if start is not None:
+        runs.append((start, prev))
+    return ", ".join(str(a) if a == b else f"{a}–{b}" for a, b in runs)
+
+
+@router.message(Command("kodlar", "kodlarni_korish"))
+async def cmd_codes(message: Message):
+    """Band kodlar ro'yxati (kichikdan kattaga) + keyingi bo'sh kod. Faqat adminlar uchun."""
+    if not is_admin(message.from_user.id):
+        return
+
+    items = sorted(await db.all_codes(), key=lambda x: _natural_key(x[0]))
+    if not items:
+        await message.answer("📋 Hozircha kino yo'q. Birinchi kod: <code>1</code>")
+        return
+
+    esc = lambda x: html.escape(str(x or ""), quote=False)
+    movies = sum(1 for it in items if it[1] == "movie")
+    head = [f"📋 <b>Kodlar</b> — jami {len(items)} ta (🎬 {movies} kino, 📺 {len(items) - movies} serial)"]
+
+    numeric = sorted({int(c) for c, *_ in items if c.isdigit()})
+    if numeric:
+        head.append(f"➕ Keyingi kod: <code>{numeric[-1] + 1}</code>")
+        if numeric[-1] - numeric[0] <= 100_000:
+            used = set(numeric)
+            gaps = [n for n in range(numeric[0], numeric[-1] + 1) if n not in used]
+            if gaps:
+                text = _ranges(gaps)
+                if len(text) > 300:
+                    text = text[:300].rsplit(",", 1)[0] + ", …"
+                head.append(f"🕳 Bo'sh kodlar: {text}")
+
+    lines = []
+    for code, kind, name, episodes in items:
+        icon = "📺" if kind == "series" else "🎬"
+        extra = f" ({episodes} qism)" if kind == "series" else ""
+        lines.append(f"<code>{esc(code)}</code> {icon} {esc((name or '')[:60])}{extra}")
+
+    # Telegram xabari 4096 belgidan oshmasligi uchun bo'laklarga bo'lamiz
+    chunks, current = [], "\n".join(head) + "\n\n"
+    for line in lines:
+        if len(current) + len(line) + 1 > 3800:
+            chunks.append(current.rstrip())
+            current = ""
+        current += line + "\n"
+    chunks.append(current.rstrip())
+    for chunk in chunks:
+        await message.answer(chunk)
+
+
 @router.message(Command("chatid"))
 async def cmd_chatid(message: Message):
     """Guruh ID sini bilish uchun: botni guruhga qo'shib, guruhda /chatid yozing."""
@@ -772,6 +813,22 @@ async def cmd_chatid(message: Message):
         f"🆔 Chat ID: <code>{message.chat.id}</code>\n\n"
         "Buyurtmalar shu guruhga kelishi uchun, Railway'da "
         f"<code>ORDERS_CHAT_ID={message.chat.id}</code> o'zgaruvchisini qo'shing."
+    )
+
+
+@router.message(
+    StateFilter(None),
+    F.from_user.id.in_(set(ADMIN_IDS)),
+    F.forward_origin.func(lambda origin: isinstance(origin, MessageOriginChannel)),
+)
+async def forwarded_channel_id(message: Message):
+    """Kanal ID sini bilish uchun: kanaldan istalgan xabarni botga forward qiling."""
+    chat = message.forward_origin.chat
+    await message.answer(
+        f"📢 Kanal: <b>{html.escape(chat.title or '')}</b>\n"
+        f"🆔 ID: <code>{chat.id}</code>\n\n"
+        f"Buyurtmalar shu kanalga kelishi uchun Railway'da:\n"
+        f"<code>ORDERS_CHAT_ID={chat.id}</code>"
     )
 
 

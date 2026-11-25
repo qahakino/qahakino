@@ -85,7 +85,7 @@ function toast(text, withChat) {
 
 const pimg = m => m.poster ? `<img class="pimg" loading="lazy" src="/poster/${encodeURIComponent(m.code)}?v=${m.poster}" onerror="this.remove()" alt="">` : "";
 const EYE = '<svg class="eye" viewBox="0 0 24 24"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>';
-const card = m => `<a class="card" href="#/item/${encodeURIComponent(m.code)}"><div class="poster" style="--h:${hue(m.name)}"><span class="ph">${esc(m.name)}</span>${pimg(m)}${m.kind === "series" ? `<i class="tag">${esc(T("tag_series"))}</i>` : ""}${m.views ? `<span class="vw">${EYE}${m.views}</span>` : ""}</div><div class="t">${esc(m.name)}</div>${m.year ? `<div class="s">${m.year}</div>` : ""}</a>`;
+const card = m => `<a class="card" href="#/item/${encodeURIComponent(m.code)}"><div class="poster" style="--h:${hue(m.name)}"><span class="ph">${esc(m.name)}</span>${pimg(m)}${m.kind === "series" ? `<i class="tag">${esc(T("tag_series"))}</i>` : ""}${m.views ? `<span class="vw">${EYE}${m.views}</span>` : ""}${m.miss ? '<i class="mi" title="Ma\'lumot yetishmaydi">📝</i>' : ""}</div><div class="t">${esc(m.name)}</div>${m.year ? `<div class="s">${m.year}</div>` : ""}</a>`;
 const GI = {Jangari:"💥",Komediya:"😂",Drama:"🎭",Fantastika:"🚀",Triller:"🔪",Sarguzasht:"🧭","Qo'rqinchli":"👻",Romantika:"💘",Multfilm:"🧸"};
 const row = (title, items, link) => items.length ? `<div class="sec"><h2>${title}</h2>${link ? `<a href="${link}">${esc(T("all"))}</a>` : ""}</div><div class="row">${items.map(card).join("")}</div>` : "";
 
@@ -122,10 +122,13 @@ async function catalog(_, p) {
   view.innerHTML = `<h1>${esc(T("catalog"))}</h1>
     ${seg([["all", T("t_all")], ["movie", T("t_movies")], ["series", T("t_series")]], f.type, "type")}
     ${chips([["", T("g_all")], ...ME.genres.map(g => [g, gname(g)])], f.genre, "genre")}
-    ${years.length || ME.is_admin ? `<div class="fl">${ME.is_admin ? `<a class="chip${f.missing ? " act" : ""}" href="${link({missing: f.missing ? "" : "1"})}">📝 ${ME.missing || 0}</a>` : ""}${[["", T("y_all")], ...years.map(y => [String(y), String(y)])].map(([v, l]) => `<a class="chip${v === f.year ? " act" : ""}" href="${link({year: v})}">${esc(l)}</a>`).join("")}</div>` : ""}
+    ${years.length || ME.is_admin ? `<div class="fl">${ME.is_admin ? `<a class="chip${f.missing ? " act" : ""}" href="${link({missing: f.missing ? "" : "1"})}">📝 Ma'lumotsiz · ${ME.missing || 0}</a>` : ""}${[["", T("y_all")], ...years.map(y => [String(y), String(y)])].map(([v, l]) => `<a class="chip${v === f.year ? " act" : ""}" href="${link({year: v})}">${esc(l)}</a>`).join("")}</div>` : ""}
     ${seg([["new", T("s_new")], ["popular", T("s_pop")], ["name", T("s_name")]], f.sort, "sort")}
     <div class="grid" id="grid"></div><button class="btn alt" id="more" hidden>${esc(T("more"))}</button>`;
-  view.querySelectorAll(".fl").forEach(fl => { const a = fl.querySelector(".act"); if (a) fl.scrollLeft = a.offsetLeft - fl.clientWidth / 2 + a.clientWidth / 2; });
+  view.querySelectorAll(".fl").forEach(fl => {  // faol tugma ko'rinmay qolsagina suriladi
+    const a = fl.querySelector(".act");
+    if (a && a.offsetLeft + a.clientWidth > fl.clientWidth) fl.scrollLeft = a.offsetLeft - fl.clientWidth / 2 + a.clientWidth / 2;
+  });
 
   let offset = 0; const grid = document.getElementById("grid"), more = document.getElementById("more");
   const show = d => {
@@ -302,6 +305,9 @@ addEventListener("hashchange", route);
     ME = await api("/me");
     LANG = ME.lang || tgLang();
     applyLang();
+    // Botdagi «📱 To'ldirish» tugmasi: ?item=KOD&edit=1 — shu kinoning tahrirlash oynasini ochadi
+    const qp = new URLSearchParams(location.search);
+    if (qp.get("item")) { location.hash = "#/item/" + encodeURIComponent(qp.get("item")) + (qp.get("edit") ? "?edit=1" : ""); return; }
     const sp = tg.initDataUnsafe?.start_param;
     if (sp) { try { location.hash = "#/item/" + encodeURIComponent(b64d(sp)); return; } catch (_) {} }
     route();

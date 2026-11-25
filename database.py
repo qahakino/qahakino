@@ -395,6 +395,18 @@ class Database:
             )
             return await cur.fetchall()
 
+    async def all_codes(self) -> list[tuple]:
+        """Barcha kod: (kod, 'movie'|'series', nomi, qismlar soni). /kodlar buyrug'i uchun."""
+        async with self.conn() as conn:
+            cur = await conn.execute("SELECT code, name FROM movies")
+            movies = await cur.fetchall()
+            cur = await conn.execute(
+                "SELECT s.code, s.name, (SELECT COUNT(*) FROM episodes e WHERE e.series_id = s.id) "
+                "FROM series s"
+            )
+            series = await cur.fetchall()
+        return [(c, "movie", n, 0) for c, n in movies] + [(c, "series", n, k) for c, n, k in series]
+
     # ---------- buyurtmalar ----------
 
     @staticmethod
