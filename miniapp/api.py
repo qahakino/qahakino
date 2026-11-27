@@ -119,6 +119,41 @@ def _gkey(text: str) -> str:
 _GENRE_MAP = {_gkey(g): g for g in GENRES} | {_gkey(k): v for k, v in _ALIASES.items()}
 
 
+def parse_duration(text) -> int | None:
+    """Davomiylikni daqiqaga aylantiradi. Qabul qilinadigan yozuvlar:
+
+      105  ·  1:45  ·  1.45  ·  1,45  ·  1-45  ·  1 45   → 105 daqiqa (soat:daqiqa)
+      1.5  ·  2,5                                          → 1,5 soat = 90 daqiqa
+      2                                                    → 2 soat (10 dan kichik yagona son — soat)
+      1 soat 45 daqiqa  ·  1s 45d  ·  1h45m  ·  2 час 5 мин → birliklar bilan
+    Tushunarsiz bo'lsa — None.
+    """
+    s = str(text or "").strip().lower().replace(",", ".")
+    if not s:
+        return None
+
+    def ok(v):
+        return v if 1 <= v <= 999 else None
+
+    hours = re.search(r"(\d+(?:\.\d+)?)\s*(?:soat|hours?|hrs?|час[а-я]*|ч|h|s)(?![a-zа-я])", s)
+    mins = re.search(r"(\d+)\s*(?:daqiqa|daq|min[a-z]*|мин[а-я]*|m|d)(?![a-zа-я])", s)
+    if hours or mins:
+        total = round(float(hours.group(1)) * 60 if hours else 0) + (int(mins.group(1)) if mins else 0)
+        return ok(total)
+
+    m = re.fullmatch(r"(\d{1,2})\s*([:.\-/ ])\s*(\d{1,2})", s)
+    if m:
+        h, sep, ms = int(m.group(1)), m.group(2), m.group(3)
+        if sep == "." and len(ms) == 1:          # 1.5 — o'nli kasr: 1,5 soat
+            return ok(round((h + int(ms) / 10) * 60))
+        return ok(h * 60 + int(ms)) if int(ms) < 60 else None
+
+    if re.fullmatch(r"\d{1,3}", s):
+        n = int(s)
+        return ok(n * 60 if n <= 9 else n)
+    return None
+
+
 def parse_info(text: str) -> dict:
     """Admin yozgan matnni tahlil qiladi.
 
@@ -139,8 +174,12 @@ def parse_info(text: str) -> dict:
                 continue
             if re.fullmatch(r"(19|20)\d\d", part):
                 meta["year"] = int(part); recognized += 1
-            elif re.fullmatch(r"\d{1,3}", part):
-                meta["duration"] = int(part); recognized += 1
+            elif re.search(r"\d", part):      # raqam bor — davomiylik (105, 1:45, 1.5 soat ...)
+                minutes = parse_duration(part)
+                if minutes:
+                    meta["duration"] = minutes; recognized += 1
+                else:
+                    meta["unknown"].append(part)
             else:
                 names = []
                 for g in re.split(r"[,;]", part):
@@ -413,7 +452,10 @@ async def admin_edit(request):
     code, b = request.match_info["code"], await request.json()
     genres = ",".join(g for g in b.get("genres", []) if g in GENRES)
     year = int(b["year"]) if str(b.get("year") or "").isdigit() else None
-    dur = int(b["duration"]) if str(b.get("duration") or "").isdigit() else None
+    raw_dur = str(b.get("duration") or "").strip()
+    dur = parse_duration(raw_dur) if raw_dur else None
+    if raw_dur and dur is None:
+        return err("bad_duration", 400)
     desc = (b.get("description") or "").strip()[:1000] or None
     await execute("UPDATE movies SET description=?, release_year=?, genres=?, duration_min=? WHERE code=?",
                   (desc, year, genres, dur, code))

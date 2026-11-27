@@ -19,7 +19,7 @@ const I18N = {
     search:"Qidiruv", search_ph:"Kino, serial nomi yoki kodi", nf:"Topilmadi", nf_s:"Nomini boshqacha yozing yoki kodni kiriting.",
     fav:"Sevimlilar", fav_empty:"Sevimlilar bo'sh", fav_empty_s:"Kino sahifasidagi «Sevimlilarga» tugmasini bosing.",
     user:"Foydalanuvchi", st_movies:"Kino", st_series:"Serial", st_favs:"Sevimli", recent:"Oxirgi ko'rilganlar", to_bot:"🤖 Botga qaytish", language:"Til",
-    tag_series:"Serial", min:"daq", n_eps:"{n} qism", code_lbl:"Kino kodi", play:"▶ Tomosha qilish", play_ep:"▶ Tomosha qilish · {n}-qism",
+    tag_series:"Serial", h:"soat", min:"daq", n_eps:"{n} qism", code_lbl:"Kino kodi", play:"▶ Tomosha qilish", play_ep:"▶ Tomosha qilish · {n}-qism",
     episodes:"Qismlar", fav_on:"♥ Sevimlilarda", fav_off:"♡ Sevimlilarga", share:"Ulashish", no_eps:"Qismlar hali qo'shilmagan",
     sent:"✅ Video botga yuborildi", to_chat:"Chatga o'tish", sub_alert:"Avval kanalga obuna bo'ling, so'ng qayta urinib ko'ring.",
     start_alert:"Avval botga o'tib /start bosing, so'ng qayta urinib ko'ring.", wait:"⏳ Biroz kuting…", fail:"⚠️ Yuborib bo'lmadi, keyinroq urinib ko'ring"},
@@ -32,7 +32,7 @@ const I18N = {
     search:"Поиск", search_ph:"Название фильма, сериала или код", nf:"Не найдено", nf_s:"Попробуйте другое написание или введите код.",
     fav:"Избранное", fav_empty:"В избранном пусто", fav_empty_s:"Нажмите «В избранное» на странице фильма.",
     user:"Пользователь", st_movies:"Фильмы", st_series:"Сериалы", st_favs:"Избранное", recent:"Недавно просмотренные", to_bot:"🤖 Вернуться в бот", language:"Язык",
-    tag_series:"Сериал", min:"мин", n_eps:"{n} сер.", code_lbl:"Код фильма", play:"▶ Смотреть", play_ep:"▶ Смотреть · серия {n}",
+    tag_series:"Сериал", h:"ч", min:"мин", n_eps:"{n} сер.", code_lbl:"Код фильма", play:"▶ Смотреть", play_ep:"▶ Смотреть · серия {n}",
     episodes:"Серии", fav_on:"♥ В избранном", fav_off:"♡ В избранное", share:"Поделиться", no_eps:"Серии ещё не добавлены",
     sent:"✅ Видео отправлено в бот", to_chat:"Перейти в чат", sub_alert:"Сначала подпишитесь на канал, затем попробуйте снова.",
     start_alert:"Сначала откройте бота и нажмите /start, затем попробуйте снова.", wait:"⏳ Подождите немного…", fail:"⚠️ Не удалось отправить, попробуйте позже"},
@@ -45,7 +45,7 @@ const I18N = {
     search:"Search", search_ph:"Movie or series title, or code", nf:"Not found", nf_s:"Try a different spelling or enter the code.",
     fav:"Saved", fav_empty:"Nothing saved yet", fav_empty_s:"Tap “Save” on a movie page.",
     user:"User", st_movies:"Movies", st_series:"Series", st_favs:"Saved", recent:"Recently watched", to_bot:"🤖 Back to the bot", language:"Language",
-    tag_series:"Series", min:"min", n_eps:"{n} eps", code_lbl:"Movie code", play:"▶ Watch", play_ep:"▶ Watch · episode {n}",
+    tag_series:"Series", h:"h", min:"min", n_eps:"{n} eps", code_lbl:"Movie code", play:"▶ Watch", play_ep:"▶ Watch · episode {n}",
     episodes:"Episodes", fav_on:"♥ Saved", fav_off:"♡ Save", share:"Share", no_eps:"No episodes yet",
     sent:"✅ Video sent to the bot", to_chat:"Open chat", sub_alert:"Please subscribe to the channel first, then try again.",
     start_alert:"Please open the bot and press /start first, then try again.", wait:"⏳ Please wait a moment…", fail:"⚠️ Couldn't send, please try later"},
@@ -83,7 +83,18 @@ function toast(text, withChat) {
   clearTimeout(toast.t); toast.t = setTimeout(() => { t.hidden = true; t.style.display = "none"; }, 5000);
 }
 
-const pimg = m => m.poster ? `<img class="pimg" loading="lazy" src="/poster/${encodeURIComponent(m.code)}?v=${m.poster}" onerror="this.remove()" alt="">` : "";
+const pimg = m => m.poster ? `<img class="pimg" loading="lazy" src="/poster/${encodeURIComponent(m.code)}?v=${m.poster}" onload="fitPoster(this)" onerror="this.remove()" alt="">` : "";
+// Poster qirqilmaydi: kartada kvadrat/keng poster to'liq ko'rinadi (orqasi xiralashtirilgan o'zidan), kino sahifasida katakcha poster shakliga moslashadi
+function fitPoster(img) {
+  const r = img.naturalWidth / img.naturalHeight, box = img.parentElement;
+  if (!r || !box) return;
+  if (box.classList.contains("big")) {
+    const c = Math.min(1.9, Math.max(0.5, r));
+    box.style.aspectRatio = c; box.style.width = Math.min(92, 52 * c / (2 / 3)) + "%";
+  } else if (box.classList.contains("poster") && Math.abs(r - 2 / 3) > 0.08) {
+    box.classList.add("fit"); box.style.setProperty("--src", `url("${img.currentSrc || img.src}")`);
+  }
+}
 const EYE = '<svg class="eye" viewBox="0 0 24 24"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>';
 const card = m => `<a class="card" href="#/item/${encodeURIComponent(m.code)}"><div class="poster" style="--h:${hue(m.name)}"><span class="ph">${esc(m.name)}</span>${pimg(m)}${m.kind === "series" ? `<i class="tag">${esc(T("tag_series"))}</i>` : ""}${m.views ? `<span class="vw">${EYE}${m.views}</span>` : ""}${m.miss ? '<i class="mi" title="Ma\'lumot yetishmaydi">📝</i>' : ""}</div><div class="t">${esc(m.name)}</div>${m.year ? `<div class="s">${m.year}</div>` : ""}</a>`;
 const GI = {Jangari:"💥",Komediya:"😂",Drama:"🎭",Fantastika:"🚀",Triller:"🔪",Sarguzasht:"🧭","Qo'rqinchli":"👻",Romantika:"💘",Multfilm:"🧸"};
@@ -139,6 +150,28 @@ async function catalog(_, p) {
   more.onclick = async () => show(await api("/catalog?" + qs(offset)));
   show(first);
 }
+// Davomiylik: 105 | 1:45 | 1.45 | 1,5 (1,5 soat) | 2 (2 soat) | "1 soat 45 daq" — serverdagi parse_duration bilan bir xil
+function parseDur(text) {
+  const s = String(text || "").trim().toLowerCase().replace(/,/g, ".");
+  if (!s) return null;
+  const ok = v => (v >= 1 && v <= 999 ? v : null);
+  const hm = s.match(/(\d+(?:\.\d+)?)\s*(?:soat|hours?|hrs?|час[а-я]*|ч|h|s)(?![a-zа-я])/);
+  const mm = s.match(/(\d+)\s*(?:daqiqa|daq|min[a-z]*|мин[а-я]*|m|d)(?![a-zа-я])/);
+  if (hm || mm) return ok(Math.round((hm ? parseFloat(hm[1]) : 0) * 60) + (mm ? parseInt(mm[1], 10) : 0));
+  let m = s.match(/^(\d{1,2})\s*([:.\-\/ ])\s*(\d{1,2})$/);
+  if (m) {
+    const h = +m[1];
+    if (m[2] === "." && m[3].length === 1) return ok(Math.round((h + (+m[3]) / 10) * 60));
+    return +m[3] < 60 ? ok(h * 60 + +m[3]) : null;
+  }
+  if (/^\d{1,3}$/.test(s)) { const n = +s; return ok(n <= 9 ? n * 60 : n); }
+  return null;
+}
+function fmtDur(min, lang = LANG) {
+  const L = I18N[lang] || I18N.uz, h = Math.floor(min / 60), m = min % 60;
+  return h ? `${h} ${L.h}` + (m ? ` ${m} ${L.min}` : "") : `${m} ${L.min}`;
+}
+const durInput = min => !min ? "" : min >= 60 ? `${Math.floor(min / 60)}:${String(min % 60).padStart(2, "0")}` : min >= 10 ? String(min) : `0:${String(min).padStart(2, "0")}`;
 const $v = id => document.getElementById(id).value;
 
 function search() {
@@ -180,7 +213,7 @@ async function item(code, params) {
   view.innerHTML = `<div class="ibg" style="--h:${hue(m.name)}">${pimg(m)}</div>
     <div class="big" style="--h:${hue(m.name)}"><span>${esc(m.name[0] || "🎬")}</span>${pimg(m)}</div>
     <h1 class="ttl">${esc(m.name)}</h1>
-    <div class="facts">${[m.year, m.duration && m.duration + " " + T("min"), m.kind === "series" && T("n_eps", {n: m.episodes.length})].filter(Boolean).map(x => `<span>${esc(x)}</span>`).join("")}<span class="vw">${EYE}${m.views}</span></div>
+    <div class="facts">${[m.year, m.duration && fmtDur(m.duration), m.kind === "series" && T("n_eps", {n: m.episodes.length})].filter(Boolean).map(x => `<span>${esc(x)}</span>`).join("")}<span class="vw">${EYE}${m.views}</span></div>
     ${m.genres.length ? `<div class="chips" style="justify-content:center">${m.genres.map(g => `<span class="chip">${esc(gname(g))}</span>`).join("")}</div>` : ""}
     <div class="ticket"><span>${esc(T("code_lbl"))}</span><b>${esc(m.code)}</b></div>
     ${m.description ? `<p class="desc">${esc(m.description)}</p>` : ""}
@@ -208,12 +241,12 @@ async function item(code, params) {
   if (edit) edit.onclick = () => openSheet(m);
   if (ME.is_admin && params?.get("edit")) openSheet(m);
 }
-async function resizeImg(file) {
-  const img = await createImageBitmap(file), w = 600, h = 900, c = document.createElement("canvas");
-  c.width = w; c.height = h;
-  const k = Math.max(w / img.width, h / img.height);
-  c.getContext("2d").drawImage(img, (w - img.width * k) / 2, (h - img.height * k) / 2, img.width * k, img.height * k);
-  return new Promise(r => c.toBlob(r, "image/jpeg", 0.85));
+async function resizeImg(file) {   // qirqilmaydi: faqat kattaligi (eng uzun tomoni 1000 px gacha) kichraytiriladi
+  const img = await createImageBitmap(file), k = Math.min(1, 1000 / Math.max(img.width, img.height));
+  const c = document.createElement("canvas");
+  c.width = Math.round(img.width * k); c.height = Math.round(img.height * k);
+  c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+  return new Promise(r => c.toBlob(r, "image/jpeg", 0.88));
 }
 const adminBar = m => {
   const miss = [!m.description && "izoh", !m.genres.length && "janr", !m.year && "yil", !m.poster && "poster"].filter(Boolean);
@@ -228,7 +261,8 @@ function openSheet(m) {
   sh.innerHTML = `<div class="pane">
     <div class="ph-row"><h3>${esc(m.name)}</h3><button class="x" id="sh-x" aria-label="Yopish">✕</button></div>
     <label class="up"><span class="thumb" style="--h:${hue(m.name)}" id="sh-thumb">${pimg(m)}</span><span><b>Poster</b><br><small>Rasm tanlash →</small></span><input type="file" accept="image/*" id="sh-poster" hidden></label>
-    <div class="g2"><input id="a-year" type="number" inputmode="numeric" placeholder="Yil" value="${m.year || ""}">${m.kind === "movie" ? `<input id="a-dur" type="number" inputmode="numeric" placeholder="Davomiyligi (daqiqa)" value="${m.duration || ""}">` : '<input id="a-dur" type="hidden">'}</div>
+    <div class="g2"><input id="a-year" type="number" inputmode="numeric" placeholder="Yil" value="${m.year || ""}">${m.kind === "movie" ? `<input id="a-dur" type="text" inputmode="text" autocomplete="off" placeholder="Davomiyligi: 1:45 yoki 105" value="${durInput(m.duration)}">` : '<input id="a-dur" type="hidden">'}</div>
+    ${m.kind === "movie" ? '<div class="cnt" id="dur-hint" style="text-align:left"></div>' : ""}
     <div class="lbl">Janrlar</div>
     <div class="chips" style="margin-top:6px">${ME.genres.map(g => `<button type="button" class="chip${genres.has(g) ? " act" : ""}" data-g="${esc(g)}">${esc(g)}</button>`).join("")}</div>
     <div class="lbl">Izoh</div>
@@ -239,6 +273,14 @@ function openSheet(m) {
   document.body.appendChild(sh); document.body.style.overflow = "hidden";
   const desc = document.getElementById("a-desc"), cnt = document.getElementById("cnt");
   const count = () => cnt.textContent = desc.value.length; count(); desc.oninput = count;
+  const dur = document.getElementById("a-dur"), hint = document.getElementById("dur-hint");
+  const showDur = () => {   // yozayotganda qanday tushunilayotgani ko'rsatiladi
+    if (!hint) return;
+    const v = parseDur(dur.value);
+    hint.style.color = dur.value && !v ? "var(--ruby)" : "var(--mut)";
+    hint.textContent = !dur.value ? "Masalan: 105, 1:45, 1.45 yoki 1,5 (1,5 soat)" : v ? `= ${fmtDur(v, "uz")} (${v} daq)` : "⚠️ Tushunarsiz. Masalan: 1:45 yoki 105";
+  };
+  if (dur && hint) { dur.oninput = showDur; showDur(); }
   sh.onclick = e => {
     if (e.target === sh || e.target.id === "sh-x") return closeSheet();
     const g = e.target.closest("[data-g]");
@@ -254,6 +296,7 @@ function openSheet(m) {
     } catch (_) { toast("⚠️ Poster yuklanmadi"); }
   };
   const save = async next => {
+    if (dur && dur.value.trim() && !parseDur(dur.value)) { toast("⚠️ Davomiylik tushunarsiz: 1:45 yoki 105 deb yozing"); return; }
     try {
       await api("/admin/item/" + encodeURIComponent(m.code), {method: "PUT", body: JSON.stringify({
         year: $v("a-year"), duration: $v("a-dur"), description: desc.value, genres: [...genres]})});

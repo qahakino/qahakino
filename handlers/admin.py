@@ -229,8 +229,9 @@ async def save_to_storage(
 INFO_HELP = (
     "Qisqa <b>izoh</b> yozing — Mini App'da kino sahifasida ko'rinadi.\n\n"
     "Yil, janr va davomiylikni ham kiritish uchun <b>birinchi qatorga</b> shunday yozing:\n"
-    "<code>2024 | Komediya, Drama | 120</code>\n"
-    "<i>(yil | janrlar | daqiqa — hammasi ixtiyoriy)</i>\n"
+    "<code>2024 | Komediya, Drama | 1:45</code>\n"
+    "<i>(yil | janrlar | davomiylik — hammasi ixtiyoriy)</i>\n"
+    "<i>Davomiylik: <code>105</code>, <code>1:45</code>, <code>1.45</code>, <code>1,5</code> (1,5 soat) yoki <code>1 soat 45 daq</code></i>\n"
     "Izoh keyingi qatordan boshlanadi.\n\n"
     f"Janrlar: {', '.join(GENRES)}\n\n"
     "O'tkazib yuborish: /skip"
