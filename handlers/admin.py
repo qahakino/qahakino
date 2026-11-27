@@ -1,15 +1,8 @@
-import asyncio
-import gzip
 import html
 import json
 import logging
-import shutil
-import tempfile
-from datetime import datetime
-from pathlib import Path
 from urllib.parse import quote
 
-import aiosqlite
 from aiogram import Bot, F, Router
 from aiogram.filters import Command, CommandObject, StateFilter
 from aiogram.fsm.context import FSMContext
@@ -25,9 +18,12 @@ from aiogram.types import (
 
 from config import ADMIN_IDS, MAX_DOWNLOAD_BYTES, STORAGE_CHANNEL_ID
 from database import db
-from miniapp import GENRES, WEBAPP_URL, get_info, next_missing_info, parse_info, set_info, set_poster
+from handlers.orders import offer_waiting_orders
+from miniapp import GENRES, WEBAPP_URL, clean_aliases, get_info, next_missing_info, parse_info, set_info, set_poster
 from keyboards import admin_clips_keyboard, serial_admin_keyboard
+from utils.backup import BackupTooLarge, backup_caption, backup_file
 from utils.parts import parse_parts
+from utils.search import split_aliases
 from states import AdminStates
 
 
@@ -178,6 +174,11 @@ async def process_movie_content(
             "Poster, janr va izohni Mini App'da to'ldiring 👇",
             reply_markup=_miniapp_edit_button(movie_code),
         )
+        # Shu nomni buyurtma qilib kutayotganlar bo'lsa — kod yuborishni taklif qiladi
+        try:
+            await offer_waiting_orders(bot, message.chat.id, movie_code)
+        except Exception:
+            logging.exception("Kutayotgan buyurtmalarni taklif qilib bo'lmadi")
 
     except Exception as e:
         await state.clear()
@@ -677,14 +678,6 @@ async def delete_content_by_code(
 # /BACKUP — BAZANI YUKLAB OLISH (boshqa serverga ko'chirish uchun)
 # ============================================================
 
-TELEGRAM_FILE_LIMIT = 49 * 1024 * 1024  # bot orqali fayl yuborish chegarasi ~50 MB
-
-
-def _gzip_file(src: Path, dst: Path):
-    with open(src, "rb") as f_in, gzip.open(dst, "wb") as f_out:
-        shutil.copyfileobj(f_in, f_out)
-
-
 @router.message(Command("backup"))
 async def cmd_backup(message: Message, state: FSMContext):
     if not is_admin(message.from_user.id):
@@ -694,40 +687,15 @@ async def cmd_backup(message: Message, state: FSMContext):
     status = await message.answer("⏳ Baza nusxasi tayyorlanmoqda...")
 
     try:
-        with tempfile.TemporaryDirectory() as tmp:
-            stamp = datetime.now().strftime("%Y-%m-%d_%H%M")
-            snapshot = Path(tmp) / f"qaxakino_{stamp}.db"
-
-            # VACUUM INTO — bot ishlab turgan paytda ham butun va buzilmagan nusxa beradi
-            async with aiosqlite.connect(db.path) as conn:
-                await conn.execute("VACUUM INTO ?", (str(snapshot),))
-
-            send_path = snapshot
-            if snapshot.stat().st_size > TELEGRAM_FILE_LIMIT:
-                send_path = Path(str(snapshot) + ".gz")
-                await asyncio.to_thread(_gzip_file, snapshot, send_path)
-
-            if send_path.stat().st_size > TELEGRAM_FILE_LIMIT:
-                await status.edit_text(
-                    "❌ Baza Telegram orqali yuborish uchun juda katta (50 MB dan oshdi).\n"
-                    "Uni Railway Volume'dan yuklab oling."
-                )
-                return
-
-            size_mb = send_path.stat().st_size / (1024 * 1024)
-            await message.answer_document(
-                FSInputFile(send_path),
-                caption=(
-                    "💾 <b>Baza nusxasi</b>\n\n"
-                    f"👥 Foydalanuvchilar: <b>{await db.users_count()}</b>\n"
-                    f"🎬 Kinolar: <b>{await db.movies_count()}</b>\n"
-                    f"📺 Seriallar: <b>{await db.series_count()}</b>\n"
-                    f"📦 Hajmi: <b>{size_mb:.2f} MB</b>\n\n"
-                    "⚠️ Faylda foydalanuvchi ma'lumotlari bor — begonalarga bermang."
-                ),
-            )
+        async with backup_file() as path:
+            await message.answer_document(FSInputFile(path), caption=await backup_caption(path))
         await status.delete()
 
+    except BackupTooLarge:
+        await status.edit_text(
+            "❌ Baza Telegram orqali yuborish uchun juda katta (50 MB dan oshdi).\n"
+            "Uni Railway Volume'dan yuklab oling."
+        )
     except Exception as e:
         logging.exception("Backup xatosi")
         await status.edit_text(
@@ -803,6 +771,45 @@ async def cmd_codes(message: Message):
     chunks.append(current.rstrip())
     for chunk in chunks:
         await message.answer(chunk)
+
+
+@router.message(Command("alias"))
+async def cmd_alias(message: Message, command: CommandObject, bot: Bot):
+    """Qo'shimcha nomlar (ruscha, inglizcha, asl nom): qidiruvda shular bo'yicha ham topiladi."""
+    if not is_admin(message.from_user.id):
+        return
+    code, _, rest = (command.args or "").strip().partition(" ")
+    if not code:
+        await message.answer(
+            "🔤 <b>Qo'shimcha nomlar</b>\n\n"
+            "Ko'rish: <code>/alias 101</code>\n"
+            "Belgilash: <code>/alias 101 Interstellar, Интерстеллар, Yulduzlararo</code>\n"
+            "Tozalash: <code>/alias 101 -</code>"
+        )
+        return
+    item = await get_info(code)
+    if not item:
+        await message.answer(f"❌ <code>{html.escape(code)}</code> kodli kino yoki serial topilmadi.")
+        return
+
+    rest = rest.strip()
+    current = ", ".join(split_aliases(item["aliases"])) or "yo'q"
+    if not rest:
+        await message.answer(
+            f"🎬 <b>{html.escape(item['name'] or '')}</b>\nQo'shimcha nomlar: {html.escape(current)}"
+        )
+        return
+
+    names = [] if rest == "-" else clean_aliases(rest)
+    await set_info(code, aliases=names)
+    await message.answer(
+        f"✅ <b>{html.escape(item['name'] or '')}</b>\nQo'shimcha nomlar: "
+        f"{html.escape(', '.join(names)) or 'tozalandi'}"
+    )
+    try:
+        await offer_waiting_orders(bot, message.chat.id, code)   # yangi nomlar buyurtmaga mos kelishi mumkin
+    except Exception:
+        logging.exception("Buyurtma taklifi xatosi")
 
 
 @router.message(Command("chatid"))
@@ -1375,6 +1382,10 @@ async def process_episode_video(
             "Endi boshqa qismlarni qo'shish uchun:\n"
             "<code>/serial</code> → serialni tanlang → qism raqami → video"
         )
+        try:
+            await offer_waiting_orders(bot, message.chat.id, series_code)
+        except Exception:
+            logging.exception("Kutayotgan buyurtmalarni taklif qilib bo'lmadi")
 
     except Exception as e:
         await message.answer(

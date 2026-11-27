@@ -24,8 +24,9 @@ from handlers.user import (
 )
 from i18n import LANG_NAMES, LANGS, all_variants, t, ulang
 from keyboards import search_results_keyboard
+from miniapp import get_info
 from states import OrderStates, UserStates
-from utils.search import matches, normalize
+from utils.search import item_matches, normalize, split_aliases, tokens_match
 
 router = Router()
 
@@ -96,8 +97,9 @@ async def order_title(message: Message, bot: Bot, state: FSMContext):
         return
 
     # Bunday kino allaqachon bormi? Bo'lsa, buyurtma o'rniga o'shani ko'rsatamiz
-    movies = [(c, n) for c, n in await db.all_movies_basic() if matches(title, n or "")]
-    series = [(i, n) for i, _c, n in await db.all_series() if matches(title, n or "")]
+    index = await db.search_index()
+    movies = [(k, n) for kind, k, n, al in index if kind == "movie" and item_matches(title, n or "", al)]
+    series = [(k, n) for kind, k, n, al in index if kind == "series" and item_matches(title, n or "", al)]
     await state.update_data(order_title=title)
 
     if movies or series:
@@ -301,23 +303,8 @@ def _who(user) -> str:
     return f"@{user.username}" if getattr(user, "username", None) else esc(user.full_name)
 
 
-async def complete_order(bot: Bot, order_id: int, code: str, admin) -> tuple[list[dict], int]:
-    """Buyurtmani «bajarildi» qiladi va mijozga kodni yuboradi.
-
-    Shu nom va shu tildagi boshqa kutilayotgan buyurtmalar ham avtomatik bajariladi.
-    Qaytaradi: (bajarilgan buyurtmalar, xabar yetmaganlar soni).
-    """
-    order = await db.get_order(order_id)
-    if not order or order["status"] != "pending":
-        return [], 0
-
-    batch = [order] + [
-        o for o in await db.pending_orders()
-        if o["id"] != order_id
-        and normalize(o["title"]) == normalize(order["title"])
-        and o["movie_lang"] == order["movie_lang"]
-    ]
-
+async def _fulfill(bot: Bot, batch: list[dict], code: str, admin) -> tuple[list[dict], int]:
+    """Berilgan buyurtmalarni «bajarildi» qiladi va mijozlarga kodni yuboradi."""
     done, unreachable = [], 0
     for o in batch:
         if not await db.finish_order(o["id"], "done", code=code, handled_by=admin.id):
@@ -332,6 +319,120 @@ async def complete_order(bot: Bot, order_id: int, code: str, admin) -> tuple[lis
         unreachable += 0 if sent else 1
         await refresh_staff(bot, o, f"✅ Bajarildi — kod: <code>{esc(code)}</code> · {_who(admin)}")
     return done, unreachable
+
+
+async def complete_order(bot: Bot, order_id: int, code: str, admin) -> tuple[list[dict], int]:
+    """Buyurtmani «bajarildi» qiladi va mijozga kodni yuboradi.
+
+    Shu nom va shu tildagi boshqa kutilayotgan buyurtmalar ham avtomatik bajariladi.
+    Qaytadan: (bajarilgan buyurtmalar, xabar yetmaganlar soni).
+    """
+    order = await db.get_order(order_id)
+    if not order or order["status"] != "pending":
+        return [], 0
+
+    batch = [order] + [
+        o for o in await db.pending_orders()
+        if o["id"] != order_id
+        and normalize(o["title"]) == normalize(order["title"])
+        and o["movie_lang"] == order["movie_lang"]
+    ]
+    return await _fulfill(bot, batch, code, admin)
+
+
+# ============================================================
+# YANGI KINO QO'SHILGANDA: KUTAYOTGAN BUYURTMALARNI TAKLIF QILISH
+# ============================================================
+
+async def pending_matches(code: str) -> tuple[dict | None, list[dict]]:
+    """Shu kino (yoki uning qo'shimcha nomlari) nomiga mos kutilayotgan buyurtmalar."""
+    info = await get_info(code)
+    if not info:
+        return None, []
+    names = [n for n in [info["name"], *split_aliases(info.get("aliases"))] if n]
+    matched = [
+        o for o in await db.pending_orders()
+        if any(tokens_match(n, o["title"]) or tokens_match(o["title"], n) for n in names)
+    ]
+    return info, matched
+
+
+async def offer_waiting_orders(bot: Bot, chat_id: int, code: str) -> bool:
+    """Mos buyurtmalar bo'lsa, adminga «shularga kod yuboraymi?» deb tugmalar bilan so'raydi."""
+    info, matched = await pending_matches(code)
+    if not matched:
+        return False
+
+    by_lang: dict[str, list[dict]] = {}
+    for o in matched:
+        by_lang.setdefault(o["movie_lang"], []).append(o)
+
+    lines = [
+        f"🔔 <b>{esc(info['name'])}</b> (kod: <code>{esc(code)}</code>) nomiga mos "
+        f"<b>{len(matched)} ta</b> kutilayotgan buyurtma bor:",
+        "",
+    ]
+    for o in matched[:10]:
+        lines.append(
+            f"• #{o['id']} {esc(o['title'])} — {LANG_NAMES.get(o['movie_lang'], o['movie_lang'])} — {esc(o['full_name'])}"
+        )
+    if len(matched) > 10:
+        lines.append(f"… va yana {len(matched) - 10} ta")
+    lines += ["", "Kinoni qaysi tilda qo'shdingiz? Shu tildagi buyurtmalarga kod yuboriladi:"]
+
+    builder = InlineKeyboardBuilder()
+    for lang_code, group in by_lang.items():
+        builder.button(text=f"{LANG_NAMES.get(lang_code, lang_code)} ({len(group)})", callback_data=f"ordfill:{code}:{lang_code}")
+    if len(by_lang) > 1:
+        builder.button(text=f"📨 Hammasiga ({len(matched)})", callback_data=f"ordfill:{code}:all")
+    builder.button(text="✖️ Yo'q", callback_data=f"ordfill:{code}:no")
+    builder.adjust(1)
+
+    await bot.send_message(chat_id, "\n".join(lines), reply_markup=builder.as_markup())
+    return True
+
+
+@router.callback_query(F.data.startswith("ordfill:"))
+async def staff_fill(callback: CallbackQuery, bot: Bot):
+    if not is_staff(callback.from_user.id):
+        await callback.answer("Ruxsat yo'q.", show_alert=True)
+        return
+    _, code, which = callback.data.split(":", 2)
+
+    if which == "no":
+        await callback.answer()
+        await callback.message.edit_text("✖️ Bekor qilindi. Buyurtmalar kutilayotganicha qoldi.")
+        return
+
+    info, matched = await pending_matches(code)
+    chosen = [o for o in matched if which == "all" or o["movie_lang"] == which]
+    if not chosen:
+        await callback.answer("Bu buyurtmalar allaqachon ko'rib chiqilgan.", show_alert=True)
+        await callback.message.edit_reply_markup(reply_markup=None)
+        return
+
+    done, unreachable = await _fulfill(bot, chosen, code, callback.from_user)
+    await callback.answer(f"✅ {len(done)} ta buyurtma bajarildi")
+    text = f"✅ <b>{esc(info['name'] if info else code)}</b>: {len(done)} ta buyurtmaga kod yuborildi."
+    if unreachable:
+        text += f"\n⚠️ {unreachable} ta mijozga xabar yetmadi (botni bloklagan bo'lishi mumkin)."
+    await callback.message.edit_text(text)
+
+
+@router.message(Command("tayyor"))
+async def cmd_ready(message: Message, bot: Bot, command):
+    """/tayyor 101 — shu kodga mos kutilayotgan buyurtmalarni ko'rsatib, kod yuborishni taklif qiladi."""
+    if not is_staff(message.from_user.id):
+        return
+    code = (command.args or "").strip()
+    if not code:
+        await message.answer("Kodni yozing: <code>/tayyor 101</code>")
+        return
+    if not await db.code_exists(code):
+        await message.answer(f"❌ <code>{esc(code)}</code> kodli kino yoki serial topilmadi.")
+        return
+    if not await offer_waiting_orders(bot, message.chat.id, code):
+        await message.answer("Bu kinoga mos kutilayotgan buyurtma yo'q.")
 
 
 async def reject_order(bot: Bot, order_id: int, kind: str, admin, custom: str | None = None) -> bool | None:

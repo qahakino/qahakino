@@ -22,6 +22,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from config import BOT_TOKEN, ADMIN_IDS, WEBHOOK_SECRET
 from database import db
 from handlers import admin, orders, user
+from utils.backup import backup_loop
 from utils.media import ffmpeg_available
 from miniapp import WEBAPP_URL, migrate, setup_miniapp
 
@@ -220,6 +221,14 @@ async def main():
                     description="Ovozli parchalar ro‘yxati"
                 ),
                 BotCommand(
+                    command="alias",
+                    description="Kinoga qo‘shimcha nom (ruscha, inglizcha)"
+                ),
+                BotCommand(
+                    command="tayyor",
+                    description="Kutayotgan buyurtmalarga kod yuborish"
+                ),
+                BotCommand(
                     command="kodlar",
                     description="Band kodlar ro‘yxati"
                 ),
@@ -268,11 +277,14 @@ async def main():
 
     await start_web_server(bot, dp)
 
+    backup_task = asyncio.create_task(backup_loop(bot))   # har kuni avtomatik zaxira nusxa
+
     logging.info("Bot webhook rejimida ishga tushdi...")
 
     try:
         await asyncio.Event().wait()
     finally:
+        backup_task.cancel()
         await bot.delete_webhook()
         await bot.session.close()
         await db.close()

@@ -30,7 +30,7 @@ from i18n import LANGS, all_variants, get_lang, set_lang, t, ulang
 from states import UserStates
 from utils.media import MediaError, ffmpeg_available, mix_parts, replace_audio
 from utils.parts import fmt_time
-from utils.search import matches, normalize
+from utils.search import item_matches, normalize
 from utils.subscription import get_unsubscribed_channels
 
 router = Router()
@@ -294,15 +294,14 @@ async def handle_name_search(message: Message, bot: Bot):
         await message.answer(t(lang, "min2"))
         return
 
+    index = await db.search_index()   # nom + qo'shimcha nomlar, kirill/lotin farqsiz
     movies = [
-        (code, name)
-        for code, name in await db.all_movies_basic()
-        if matches(query, name or "")
+        (key, name) for kind, key, name, aliases in index
+        if kind == "movie" and item_matches(query, name or "", aliases)
     ]
     series = [
-        (series_id, name)
-        for series_id, _code, name in await db.all_series()
-        if matches(query, name or "")
+        (key, name) for kind, key, name, aliases in index
+        if kind == "series" and item_matches(query, name or "", aliases)
     ]
 
     total = len(movies) + len(series)

@@ -21,7 +21,7 @@ from aiohttp import web
 from config import ADMIN_IDS, BOT_TOKEN, REQUIRED_CHANNELS, STORAGE_CHANNEL_ID
 from database import db
 from i18n import LANGS, get_lang, set_lang
-from utils.search import matches
+from utils.search import item_matches, split_aliases
 from utils.subscription import get_unsubscribed_channels
 
 GENRES = ["Jangari", "Komediya", "Drama", "Fantastika", "Triller",
@@ -32,17 +32,17 @@ WEBAPP_URL = os.getenv("WEBAPP_URL", "https://qahakino-production.up.railway.app
 # Kino va seriallar bitta ro'yxat sifatida (kod ikkalasi uchun ham yagona)
 ITEMS = """
 SELECT code, name, 'movie' AS kind, release_year AS year, genres, views,
-       added_at AS created, description, duration_min AS duration, poster_file_id
+       added_at AS created, description, duration_min AS duration, poster_file_id, aliases
 FROM movies WHERE is_active = 1
 UNION ALL
 SELECT code, name, 'series', release_year, genres, views,
-       created_at, description, NULL, poster_file_id
+       created_at, description, NULL, poster_file_id, aliases
 FROM series WHERE is_active = 1
 """
 # Ma'lumoti yetishmaydigan: izoh, janr yoki poster yo'q
 MISSING = ("(IFNULL(description, '') = '' OR IFNULL(genres, '') = '' "
            "OR IFNULL(poster_file_id, '') = '')")
-CARD = "SELECT code, name, kind, year, genres, views, poster_file_id, description FROM (" + ITEMS + ")"
+CARD = "SELECT code, name, kind, year, genres, views, poster_file_id, description, aliases FROM (" + ITEMS + ")"
 
 
 # ---------------- migratsiya (faqat qo'shadi, hech narsani o'chirmaydi) ----------------
@@ -51,9 +51,9 @@ async def migrate():
         "users": [("lang", "TEXT")],
         "movies": [("description", "TEXT"), ("release_year", "INTEGER"), ("genres", "TEXT"),
                    ("duration_min", "INTEGER"), ("views", "INTEGER DEFAULT 0"),
-                   ("is_active", "INTEGER DEFAULT 1"), ("poster_file_id", "TEXT")],
+                   ("is_active", "INTEGER DEFAULT 1"), ("poster_file_id", "TEXT"), ("aliases", "TEXT")],
         "series": [("description", "TEXT"), ("release_year", "INTEGER"), ("genres", "TEXT"),
-                   ("views", "INTEGER DEFAULT 0"), ("is_active", "INTEGER DEFAULT 1"), ("poster_file_id", "TEXT")],
+                   ("views", "INTEGER DEFAULT 0"), ("is_active", "INTEGER DEFAULT 1"), ("poster_file_id", "TEXT"), ("aliases", "TEXT")],
     }
     async with db.conn() as c:
         for table, cols in add.items():
@@ -205,7 +205,18 @@ def parse_info(text: str) -> dict:
     return info
 
 
-async def set_info(code: str, *, description=None, year=None, genres=None, duration=None):
+def clean_aliases(text) -> list[str]:
+    """Qo'shimcha nomlar: takrorlarsiz, ko'pi bilan 10 ta, har biri 80 belgigacha."""
+    seen, out = set(), []
+    for a in split_aliases(text if isinstance(text, str) else "\n".join(text or [])):
+        key = a.casefold()
+        if key not in seen:
+            seen.add(key)
+            out.append(a[:80])
+    return out[:10]
+
+
+async def set_info(code: str, *, description=None, year=None, genres=None, duration=None, aliases=None):
     """Faqat berilgan maydonlarni yangilaydi, qolganlariga tegmaydi."""
     fields = {}
     if description is not None:
@@ -214,6 +225,8 @@ async def set_info(code: str, *, description=None, year=None, genres=None, durat
         fields["release_year"] = year
     if genres is not None:
         fields["genres"] = ",".join(genres)
+    if aliases is not None:
+        fields["aliases"] = "\n".join(clean_aliases(aliases)) or None
     for table in ("movies", "series"):
         f = dict(fields)
         if table == "movies" and duration is not None:
@@ -221,11 +234,12 @@ async def set_info(code: str, *, description=None, year=None, genres=None, durat
         if f:
             sets = ", ".join(f"{k}=?" for k in f)  # ustun nomlari yuqorida qat'iy belgilangan
             await execute(f"UPDATE {table} SET {sets} WHERE code=?", (*f.values(), code))
+    db.invalidate()   # qidiruv keshi yangilansin
 
 
 async def get_info(code: str):
     rows = await fetch(
-        f"SELECT code, name, kind, year, genres, description, duration FROM ({ITEMS}) WHERE code=?", (code,))
+        f"SELECT code, name, kind, year, genres, description, duration, aliases FROM ({ITEMS}) WHERE code=?", (code,))
     return rows[0] if rows else None
 
 
@@ -336,7 +350,7 @@ async def catalog(request):
     text = (q.get("q") or "").strip()
 
     if text:  # botdagi bilan bir xil qidiruv (o', g' apostroflari, so'z tartibi) + kod bo'yicha
-        rows = [r for r in await fetch(sql, args) if r["code"] == text or matches(text, r["name"] or "")]
+        rows = [r for r in await fetch(sql, args) if r["code"] == text or item_matches(text, r["name"] or "", r.get("aliases"))]
         page, has_more = rows[offset: offset + limit], offset + limit < len(rows)
     else:     # oddiy ro'yxat: faqat kerakli qismi bazadan olinadi
         rows = await fetch(sql + " LIMIT ? OFFSET ?", args + [limit + 1, offset])
@@ -372,6 +386,7 @@ async def item(request):
         out["last_episode"] = last[0]["n"] if last else None
     if uid in ADMIN_IDS:
         out["description"] = r["description"] or ""
+        out["aliases"] = ", ".join(split_aliases(r.get("aliases")))
         nxt = await fetch(f"SELECT code FROM ({ITEMS}) WHERE {MISSING} AND code != ? ORDER BY created DESC LIMIT 1", (code,))
         out["next_missing"] = nxt[0]["code"] if nxt else None
     return ok(out)
@@ -461,6 +476,11 @@ async def admin_edit(request):
                   (desc, year, genres, dur, code))
     await execute("UPDATE series SET description=?, release_year=?, genres=? WHERE code=?",
                   (desc, year, genres, code))
+    if "aliases" in b:   # eski brauzer nusxasi yubormasa, mavjud nomlar o'chib ketmasin
+        names = "\n".join(clean_aliases(b.get("aliases"))) or None
+        await execute("UPDATE movies SET aliases=? WHERE code=?", (names, code))
+        await execute("UPDATE series SET aliases=? WHERE code=?", (names, code))
+    db.invalidate()
     return ok({"saved": True})
 
 

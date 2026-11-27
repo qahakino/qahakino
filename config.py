@@ -21,6 +21,11 @@ STORAGE_CHANNEL_ID = int(os.getenv("STORAGE_CHANNEL_ID", "0"))
 # Bo'sh qoldirilsa, buyurtmalar har bir adminning shaxsiy chatiga yuboriladi.
 ORDERS_CHAT_ID = int(os.getenv("ORDERS_CHAT_ID", "0") or 0)
 
+# Har kuni avtomatik zaxira nusxa: soat (Toshkent vaqti bilan) va qayerga yuborilishi.
+# BACKUP_CHAT_ID bo'sh bo'lsa — hamma adminga shaxsiy xabar bilan. BACKUP_HOUR=-1 — o'chirish.
+BACKUP_HOUR = int(os.getenv("BACKUP_HOUR", "3"))
+BACKUP_CHAT_ID = int(os.getenv("BACKUP_CHAT_ID", "0") or 0)
+
 DB_PATH = os.getenv("DB_PATH", "bot.db")
 
 # Webhook xavfsizligi uchun (ixtiyoriy, lekin tavsiya etiladi).

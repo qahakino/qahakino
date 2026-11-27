@@ -395,6 +395,31 @@ class Database:
             )
             return await cur.fetchall()
 
+    async def search_index(self) -> list[tuple]:
+        """Qidiruv uchun (tur, kalit, nom, qo'shimcha nomlar). Xotirada saqlanadi;
+        kino qo'shish, o'chirish yoki tahrirlashda invalidate() tozalaydi."""
+        if "index" not in self._cache:
+            async with self.conn() as conn:
+                try:
+                    cur = await conn.execute(
+                        "SELECT 'movie', code, name, aliases FROM movies ORDER BY name COLLATE NOCASE")
+                    movies = await cur.fetchall()
+                    cur = await conn.execute(
+                        "SELECT 'series', id, name, aliases FROM series ORDER BY name COLLATE NOCASE")
+                    series = await cur.fetchall()
+                except Exception:   # aliases ustuni hali yaratilmagan bo'lsa
+                    cur = await conn.execute(
+                        "SELECT 'movie', code, name, '' FROM movies ORDER BY name COLLATE NOCASE")
+                    movies = await cur.fetchall()
+                    cur = await conn.execute(
+                        "SELECT 'series', id, name, '' FROM series ORDER BY name COLLATE NOCASE")
+                    series = await cur.fetchall()
+            self._cache["index"] = movies + series
+        return self._cache["index"]
+
+    def invalidate(self):
+        self._cache.clear()
+
     async def all_codes(self) -> list[tuple]:
         """Barcha kod: (kod, 'movie'|'series', nomi, qismlar soni). /kodlar buyrug'i uchun."""
         async with self.conn() as conn:

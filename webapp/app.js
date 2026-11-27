@@ -263,6 +263,8 @@ function openSheet(m) {
     <label class="up"><span class="thumb" style="--h:${hue(m.name)}" id="sh-thumb">${pimg(m)}</span><span><b>Poster</b><br><small>Rasm tanlash →</small></span><input type="file" accept="image/*" id="sh-poster" hidden></label>
     <div class="g2"><input id="a-year" type="number" inputmode="numeric" placeholder="Yil" value="${m.year || ""}">${m.kind === "movie" ? `<input id="a-dur" type="text" inputmode="text" autocomplete="off" placeholder="Davomiyligi: 1:45 yoki 105" value="${durInput(m.duration)}">` : '<input id="a-dur" type="hidden">'}</div>
     ${m.kind === "movie" ? '<div class="cnt" id="dur-hint" style="text-align:left"></div>' : ""}
+    <div class="lbl">Boshqa nomlari (ruscha, inglizcha, asl nom — qidiruv uchun)</div>
+    <input id="a-alias" type="text" autocomplete="off" placeholder="Masalan: Интерстеллар, Interstellar" value="${esc(m.aliases || "")}">
     <div class="lbl">Janrlar</div>
     <div class="chips" style="margin-top:6px">${ME.genres.map(g => `<button type="button" class="chip${genres.has(g) ? " act" : ""}" data-g="${esc(g)}">${esc(g)}</button>`).join("")}</div>
     <div class="lbl">Izoh</div>
@@ -299,7 +301,7 @@ function openSheet(m) {
     if (dur && dur.value.trim() && !parseDur(dur.value)) { toast("⚠️ Davomiylik tushunarsiz: 1:45 yoki 105 deb yozing"); return; }
     try {
       await api("/admin/item/" + encodeURIComponent(m.code), {method: "PUT", body: JSON.stringify({
-        year: $v("a-year"), duration: $v("a-dur"), description: desc.value, genres: [...genres]})});
+        year: $v("a-year"), duration: $v("a-dur"), description: desc.value, aliases: $v("a-alias"), genres: [...genres]})});
       ME = await api("/me");               // "ma'lumotsiz" soni yangilanadi
       closeSheet(); toast("✅ Saqlandi");
       if (next && m.next_missing) location.hash = "#/item/" + encodeURIComponent(m.next_missing) + "?edit=1";
